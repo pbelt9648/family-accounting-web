@@ -75,20 +75,35 @@ const DEFAULT_SETTINGS = {
   billingPrefix: "BN",
   taxInvoicePrefix: "TI",
   receiptPrefix: "RC",
+  debitNotePrefix: "DN",
+  creditNotePrefix: "CN",
   sellerCode: "001",
   nextInvoiceNumber: 1,
   nextQuoteNumber: 1,
   nextBillingNumber: 1,
   nextTaxInvoiceNumber: 1,
   nextReceiptNumber: 1,
+  nextDebitNoteNumber: 1,
+  nextCreditNoteNumber: 1,
   lowStockDefault: 5,
 };
+
+const WHT_TYPES = [
+  { code: "service", label: "ค่าจ้างทำของ/ค่าบริการ", rate: 3 },
+  { code: "rent", label: "ค่าเช่า", rate: 5 },
+  { code: "transport", label: "ค่าขนส่ง", rate: 1 },
+  { code: "ads", label: "ค่าโฆษณา", rate: 2 },
+  { code: "professional", label: "ค่าวิชาชีพอิสระ", rate: 3 },
+  { code: "other", label: "อื่นๆ", rate: 3 },
+];
 
 const DOC_TYPE_LABEL = {
   quote: "ใบเสนอราคา",
   invoice: "ใบแจ้งหนี้",
   taxinvoice: "ใบกำกับภาษี",
   receipt: "ใบเสร็จรับเงิน",
+  debitnote: "ใบเพิ่มหนี้",
+  creditnote: "ใบลดหนี้",
 };
 
 const EXPENSE_CATEGORIES = ["วัตถุดิบ/ชิ้นส่วน", "ค่าแรง", "ค่าขนส่ง", "ค่าน้ำ-ค่าไฟ", "ค่าเช่า", "ค่าซ่อมบำรุง", "การตลาด", "อื่นๆ"];
@@ -230,10 +245,10 @@ export default function AccountingApp() {
         />
       )}
       {tab === "salesReport" && (
-        <SalesReportTab documents={documents} products={products} showToast={showToast} />
+        <SalesReportTab documents={documents} products={products} transactions={transactions} showToast={showToast} />
       )}
       {tab === "transactions" && (
-        <TransactionsTab transactions={transactions} updateTransactions={updateTransactions} showToast={showToast} confirmAction={confirmAction} />
+        <TransactionsTab transactions={transactions} updateTransactions={updateTransactions} settings={settings} showToast={showToast} confirmAction={confirmAction} />
       )}
       {tab === "inventory" && (
         <InventoryTab products={products} updateProducts={updateProducts} settings={settings} showToast={showToast} confirmAction={confirmAction} />
@@ -749,8 +764,9 @@ function ProductForm({ data, onSave }) {
 
 /* ------------------------------- transactions -------------------------------- */
 
-function TransactionsTab({ transactions, updateTransactions, showToast, confirmAction }) {
+function TransactionsTab({ transactions, updateTransactions, settings, showToast, confirmAction }) {
   const [modal, setModal] = useState(null);
+  const [certTx, setCertTx] = useState(null);
   const [filter, setFilter] = useState("all");
 
   const filtered = transactions
@@ -822,6 +838,7 @@ function TransactionsTab({ transactions, updateTransactions, showToast, confirmA
                   </td>
                   <td>
                     <div className="flex gap-2 justify-end">
+                      {t.hasWht && <button className="btn-ghost p-1.5" title="พิมพ์หนังสือรับรองหัก ณ ที่จ่าย (50 ทวิ)" onClick={() => setCertTx(t)}><FileText size={14} /></button>}
                       {!t.sourceDocId && <button className="btn-ghost p-1.5" onClick={() => setModal({ mode: "edit", data: { ...t, amount: String(t.amount) } })}><Pencil size={14} /></button>}
                       <button className="btn-ghost btn-danger p-1.5" onClick={() => remove(t.id)}><Trash2 size={14} /></button>
                     </div>
@@ -838,13 +855,32 @@ function TransactionsTab({ transactions, updateTransactions, showToast, confirmA
           <TransactionForm data={modal.data} onSave={save} />
         </Modal>
       )}
+
+      {certTx && <WHTCertificatePrintView tx={certTx} settings={settings} onClose={() => setCertTx(null)} />}
     </div>
   );
 }
 
 function TransactionForm({ data, onSave }) {
-  const [f, setF] = useState(data);
+  const [f, setF] = useState({ hasWht: false, whtType: "service", whtRate: 3, whtBase: "", payeeName: "", payeeTaxId: "", payeeAddress: "", hasInputVat: false, inputVat: "", ...data });
   const cats = f.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+  const whtAmount = f.hasWht ? (Number(f.whtBase || 0) * Number(f.whtRate || 0)) / 100 : 0;
+
+  function pickWhtType(code) {
+    const t = WHT_TYPES.find((w) => w.code === code);
+    setF({ ...f, whtType: code, whtRate: t ? t.rate : f.whtRate });
+  }
+
+  function handleSave() {
+    onSave({
+      ...f,
+      ...(f.hasWht
+        ? { whtRate: Number(f.whtRate) || 0, whtBase: Number(f.whtBase) || 0, whtAmount }
+        : { hasWht: false, whtType: undefined, whtRate: undefined, whtBase: undefined, whtAmount: undefined, payeeName: undefined, payeeTaxId: undefined, payeeAddress: undefined }),
+      ...(f.hasInputVat ? { inputVat: Number(f.inputVat) || 0 } : { hasInputVat: false, inputVat: undefined }),
+    });
+  }
+
   return (
     <div>
       <div className="grid grid-cols-2 gap-3">
@@ -863,7 +899,111 @@ function TransactionForm({ data, onSave }) {
       </Field>
       <Field label="จำนวนเงิน (บาท) *"><input type="number" step="0.01" className={inputCls} value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></Field>
       <Field label="บันทึกเพิ่มเติม"><input className={inputCls} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /></Field>
-      <button className="btn-primary w-full py-2.5 text-sm mt-2" onClick={() => onSave(f)}>บันทึก</button>
+
+      {f.type === "expense" && (
+        <>
+          <label className="flex items-center gap-2 mb-3" style={{ fontSize: 13 }}>
+            <input type="checkbox" checked={f.hasInputVat} onChange={(e) => setF({ ...f, hasInputVat: e.target.checked })} /> มีภาษีซื้อ (ใบกำกับภาษีจากผู้ขาย)
+          </label>
+          {f.hasInputVat && (
+            <Field label="ภาษีซื้อ (บาท)"><input type="number" step="0.01" className={inputCls} value={f.inputVat} onChange={(e) => setF({ ...f, inputVat: e.target.value })} /></Field>
+          )}
+
+          <label className="flex items-center gap-2 mb-3" style={{ fontSize: 13 }}>
+            <input type="checkbox" checked={f.hasWht} onChange={(e) => setF({ ...f, hasWht: e.target.checked })} /> มีการหักภาษี ณ ที่จ่าย
+          </label>
+          {f.hasWht && (
+            <div className="card p-3 mb-3" style={{ background: "var(--paper)" }}>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="ประเภทเงินได้">
+                  <select className={inputCls} value={f.whtType} onChange={(e) => pickWhtType(e.target.value)}>
+                    {WHT_TYPES.map((w) => <option key={w.code} value={w.code}>{w.label} ({w.rate}%)</option>)}
+                  </select>
+                </Field>
+                <Field label="อัตราภาษี (%)"><input type="number" step="0.01" className={inputCls} value={f.whtRate} onChange={(e) => setF({ ...f, whtRate: e.target.value })} /></Field>
+              </div>
+              <Field label="ยอดเงินได้ที่จ่าย (ก่อนหักภาษี)"><input type="number" step="0.01" className={inputCls} value={f.whtBase} onChange={(e) => setF({ ...f, whtBase: e.target.value })} /></Field>
+              <div className="flex justify-between mb-3" style={{ fontSize: 13, fontWeight: 600 }}>
+                <span>ภาษีที่หักไว้</span><span className="mono">{thb(whtAmount)}</span>
+              </div>
+              <Field label="ชื่อผู้ถูกหักภาษี (ผู้รับเงิน)"><input className={inputCls} value={f.payeeName} onChange={(e) => setF({ ...f, payeeName: e.target.value })} /></Field>
+              <Field label="เลขประจำตัวผู้เสียภาษีผู้ถูกหักภาษี"><input className={inputCls} value={f.payeeTaxId} onChange={(e) => setF({ ...f, payeeTaxId: e.target.value })} /></Field>
+              <Field label="ที่อยู่ผู้ถูกหักภาษี"><textarea className={inputCls} rows={2} value={f.payeeAddress} onChange={(e) => setF({ ...f, payeeAddress: e.target.value })} /></Field>
+            </div>
+          )}
+        </>
+      )}
+
+      <button className="btn-primary w-full py-2.5 text-sm mt-2" onClick={handleSave}>บันทึก</button>
+    </div>
+  );
+}
+
+function WHTCertificatePrintView({ tx, settings, onClose }) {
+  const whtTypeLabel = WHT_TYPES.find((w) => w.code === tx.whtType)?.label || "อื่นๆ";
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-4" style={{ background: "rgba(20,20,18,0.55)", zIndex: 60 }}>
+      <div className="card w-full flex flex-col" style={{ maxWidth: 640, maxHeight: "92vh" }}>
+        <div className="flex items-center justify-between px-5 py-4 no-print" style={{ borderBottom: "1px solid var(--border)" }}>
+          <h2 style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 17 }}>หนังสือรับรองการหักภาษี ณ ที่จ่าย</h2>
+          <div className="flex gap-2">
+            <button className="btn-primary flex items-center gap-1.5 px-3 py-1.5 text-sm" onClick={() => window.print()}><Printer size={14} /> พิมพ์ / บันทึก PDF</button>
+            <button onClick={onClose} className="btn-ghost p-1"><X size={18} /></button>
+          </div>
+        </div>
+        <div className="p-8 overflow-y-auto print-area">
+          <div className="text-center mb-6">
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 18 }}>หนังสือรับรองการหักภาษี ณ ที่จ่าย</div>
+            <div style={{ fontSize: 12, color: "var(--steel)" }}>ตามมาตรา 50 ทวิ แห่งประมวลรัษฎากร</div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 mb-4" style={{ fontSize: 13 }}>
+            <div className="card p-3">
+              <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", marginBottom: 4 }}>ผู้จ่ายเงิน</div>
+              <div style={{ fontWeight: 600 }}>{settings.companyName}</div>
+              <div style={{ color: "var(--steel)", whiteSpace: "pre-line" }}>{settings.address}</div>
+              {settings.taxId && <div style={{ color: "var(--steel)" }}>เลขประจำตัวผู้เสียภาษี {settings.taxId}</div>}
+            </div>
+            <div className="card p-3">
+              <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", marginBottom: 4 }}>ผู้ถูกหักภาษี ณ ที่จ่าย</div>
+              <div style={{ fontWeight: 600 }}>{tx.payeeName || "-"}</div>
+              <div style={{ color: "var(--steel)", whiteSpace: "pre-line" }}>{tx.payeeAddress}</div>
+              {tx.payeeTaxId && <div style={{ color: "var(--steel)" }}>เลขประจำตัวผู้เสียภาษี {tx.payeeTaxId}</div>}
+            </div>
+          </div>
+
+          <table style={{ marginBottom: 12 }}>
+            <thead><tr><th>วันที่จ่ายเงิน</th><th>ประเภทเงินได้</th><th style={{ textAlign: "right" }}>จำนวนเงินที่จ่าย</th><th style={{ textAlign: "right" }}>อัตรา</th><th style={{ textAlign: "right" }}>ภาษีที่หักไว้</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>{fmtDate(tx.date)}</td>
+                <td>{whtTypeLabel}</td>
+                <td className="mono" style={{ textAlign: "right" }}>{thb(tx.whtBase)}</td>
+                <td className="mono" style={{ textAlign: "right" }}>{tx.whtRate}%</td>
+                <td className="mono" style={{ textAlign: "right" }}>{thb(tx.whtAmount)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div className="flex justify-end mb-6">
+            <div style={{ minWidth: 220, fontSize: 13 }}>
+              <div className="flex justify-between" style={{ fontWeight: 700, fontSize: 15, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+                <span>รวมภาษีที่หักไว้</span><span className="mono">{thb(tx.whtAmount)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-8 mt-10" style={{ fontSize: 12 }}>
+            <div className="text-center">
+              <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, marginTop: 40 }}>ผู้จ่ายเงิน (ลงชื่อ)</div>
+              <div style={{ color: "var(--steel)", marginTop: 4 }}>วันที่ {fmtDate(tx.date)}</div>
+            </div>
+            <div className="text-center">
+              <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, marginTop: 40 }}>ตราประทับ (ถ้ามี)</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -884,6 +1024,8 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
       quote: ["quotePrefix", "nextQuoteNumber"],
       taxinvoice: ["taxInvoicePrefix", "nextTaxInvoiceNumber"],
       receipt: ["receiptPrefix", "nextReceiptNumber"],
+      debitnote: ["debitNotePrefix", "nextDebitNoteNumber"],
+      creditnote: ["creditNotePrefix", "nextCreditNoteNumber"],
     };
     const [prefixField, numField] = map[docType];
     const prefix = settings[prefixField];
@@ -896,6 +1038,10 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
   function saveDoc(form, isNew) {
     if (!form.customerId) return showToast("กรุณาเลือกลูกค้า", "error");
     if (form.items.length === 0) return showToast("กรุณาเพิ่มรายการสินค้า/บริการอย่างน้อย 1 รายการ", "error");
+    if ((form.docType === "debitnote" || form.docType === "creditnote")) {
+      if (!form.sourceDocId) return showToast("กรุณาเลือกเอกสารต้นทางที่จะอ้างอิง", "error");
+      if (!form.adjustReason?.trim()) return showToast("กรุณาระบุเหตุผลที่ออกเอกสาร", "error");
+    }
     if (isNew) {
       const docNumber = genNumber(form.docType);
       const doc = { ...form, id: uid(), docNumber, status: "draft", settled: false };
@@ -957,15 +1103,21 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
             <button className="btn-ghost flex items-center gap-1.5 px-4 py-2 text-sm" onClick={() => setModal({ mode: "add", docType: "taxinvoice" })}>
               <Plus size={16} /> ใบกำกับภาษี
             </button>
-            <button className="btn-primary flex items-center gap-1.5 px-4 py-2 text-sm" onClick={() => setModal({ mode: "add", docType: "receipt" })}>
+            <button className="btn-ghost flex items-center gap-1.5 px-4 py-2 text-sm" onClick={() => setModal({ mode: "add", docType: "receipt" })}>
               <Plus size={16} /> ใบเสร็จรับเงิน
+            </button>
+            <button className="btn-ghost flex items-center gap-1.5 px-4 py-2 text-sm" onClick={() => setModal({ mode: "add", docType: "debitnote" })}>
+              <Plus size={16} /> ใบเพิ่มหนี้
+            </button>
+            <button className="btn-primary flex items-center gap-1.5 px-4 py-2 text-sm" onClick={() => setModal({ mode: "add", docType: "creditnote" })}>
+              <Plus size={16} /> ใบลดหนี้
             </button>
           </div>
         }
       />
 
       <div className="flex gap-2 mb-4 flex-wrap">
-        {[["all", "ทั้งหมด"], ["quote", "ใบเสนอราคา"], ["invoice", "ใบแจ้งหนี้"], ["taxinvoice", "ใบกำกับภาษี"], ["receipt", "ใบเสร็จรับเงิน"]].map(([k, l]) => (
+        {[["all", "ทั้งหมด"], ["quote", "ใบเสนอราคา"], ["invoice", "ใบแจ้งหนี้"], ["taxinvoice", "ใบกำกับภาษี"], ["receipt", "ใบเสร็จรับเงิน"], ["debitnote", "ใบเพิ่มหนี้"], ["creditnote", "ใบลดหนี้"]].map(([k, l]) => (
           <button key={k} onClick={() => setTypeFilter(k)} className="btn-ghost px-3 py-1.5 text-sm" style={typeFilter === k ? { background: "var(--ink)", color: "#fff", borderColor: "var(--ink)" } : {}}>
             {l}
           </button>
@@ -1031,14 +1183,15 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
             docType={modal.docType || modal.data?.docType}
             customers={customers}
             products={products}
+            documents={documents}
             settings={settings}
             onSave={(form) => saveDoc(form, modal.mode === "add")}
           />
         </Modal>
       )}
 
-      {viewDoc && (viewDoc.docType === "taxinvoice" || viewDoc.docType === "receipt") && (
-        <TaxReceiptPrintView doc={viewDoc} customers={customers} settings={settings} onClose={() => setViewDoc(null)} />
+      {viewDoc && ["taxinvoice", "receipt", "debitnote", "creditnote"].includes(viewDoc.docType) && (
+        <TaxReceiptPrintView doc={viewDoc} customers={customers} documents={documents} settings={settings} onClose={() => setViewDoc(null)} />
       )}
       {viewDoc && (viewDoc.docType === "quote" || viewDoc.docType === "invoice") && (
         <DocumentPrintView doc={viewDoc} customers={customers} settings={settings} onClose={() => setViewDoc(null)} />
@@ -1047,7 +1200,7 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
   );
 }
 
-function DocumentForm({ existing, docType, customers, products, settings, onSave }) {
+function DocumentForm({ existing, docType, customers, products, documents, settings, onSave }) {
   const [customerId, setCustomerId] = useState(existing?.customerId || "");
   const [date, setDate] = useState(existing?.date || today());
   const [dueDate, setDueDate] = useState(existing?.dueDate || "");
@@ -1055,7 +1208,8 @@ function DocumentForm({ existing, docType, customers, products, settings, onSave
   const [note, setNote] = useState(existing?.note || "");
   const [items, setItems] = useState(existing?.items || []);
   const effectiveType = docType || existing?.docType || "quote";
-  const isTaxDoc = effectiveType === "taxinvoice" || effectiveType === "receipt";
+  const isAdjustNote = effectiveType === "debitnote" || effectiveType === "creditnote";
+  const isTaxDoc = effectiveType === "taxinvoice" || effectiveType === "receipt" || isAdjustNote;
 
   const [refNote, setRefNote] = useState(existing?.refNote || "");
   const [jobName, setJobName] = useState(existing?.jobName || "");
@@ -1065,6 +1219,12 @@ function DocumentForm({ existing, docType, customers, products, settings, onSave
   const [bankName, setBankName] = useState(existing?.bankName || "");
   const [paymentRefNumber, setPaymentRefNumber] = useState(existing?.paymentRefNumber || "");
   const [paymentDate, setPaymentDate] = useState(existing?.paymentDate || "");
+  const [sourceDocId, setSourceDocId] = useState(existing?.sourceDocId || "");
+  const [adjustReason, setAdjustReason] = useState(existing?.adjustReason || "");
+
+  const sourceCandidates = (documents || []).filter(
+    (d) => (d.docType === "taxinvoice" || d.docType === "invoice") && (!customerId || d.customerId === customerId)
+  );
 
   function addItem() {
     setItems([...items, { id: uid(), productId: "", name: "", unit: "", qty: 1, price: 0, discount: 0 }]);
@@ -1092,6 +1252,7 @@ function DocumentForm({ existing, docType, customers, products, settings, onSave
       subtotal, vatAmount, total,
       ...(isTaxDoc ? { refNote, jobName, contactName, contactPhone } : {}),
       ...(effectiveType === "receipt" ? { paymentMethod, bankName, paymentRefNumber, paymentDate } : {}),
+      ...(isAdjustNote ? { sourceDocId, adjustReason } : {}),
     });
   }
 
@@ -1117,6 +1278,21 @@ function DocumentForm({ existing, docType, customers, products, settings, onSave
           <Field label="ชื่องาน"><input className={inputCls} value={jobName} onChange={(e) => setJobName(e.target.value)} /></Field>
           <Field label="ผู้ติดต่อ"><input className={inputCls} value={contactName} onChange={(e) => setContactName(e.target.value)} /></Field>
           <Field label="เบอร์โทร"><input className={inputCls} value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} /></Field>
+        </div>
+      )}
+
+      {isAdjustNote && (
+        <div className="card p-3 mb-3" style={{ background: "var(--paper)" }}>
+          <Field label="อ้างอิงใบกำกับภาษี/ใบแจ้งหนี้ต้นทาง *">
+            <select className={inputCls} value={sourceDocId} onChange={(e) => setSourceDocId(e.target.value)}>
+              <option value="">เลือกเอกสารต้นทาง</option>
+              {sourceCandidates.map((d) => <option key={d.id} value={d.id}>{d.docNumber} · {DOC_TYPE_LABEL[d.docType]} · {thb(d.total)}</option>)}
+            </select>
+          </Field>
+          {sourceCandidates.length === 0 && <p style={{ fontSize: 12, color: "var(--steel)" }}>ยังไม่มีใบกำกับภาษี/ใบแจ้งหนี้ของลูกค้ารายนี้ที่จะอ้างอิงได้</p>}
+          <Field label={`เหตุผลที่ออก${DOC_TYPE_LABEL[effectiveType]} *`}>
+            <textarea className={inputCls} rows={2} placeholder={effectiveType === "debitnote" ? "เช่น เรียกเก็บเงินเพิ่มเนื่องจากคำนวณราคาผิดพลาด" : "เช่น รับคืนสินค้า / ลดราคาหลังส่งมอบ"} value={adjustReason} onChange={(e) => setAdjustReason(e.target.value)} />
+          </Field>
         </div>
       )}
 
@@ -1297,12 +1473,15 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
   );
 }
 
-function TaxReceiptPrintView({ doc, customers, settings, onClose }) {
+function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
   const customer = customers.find((c) => c.id === doc.customerId);
   const isReceipt = doc.docType === "receipt";
-  const title = isReceipt ? "ใบเสร็จรับเงิน" : "ใบกำกับภาษี";
-  const cornerColor = isReceipt ? "var(--green)" : "#2A4B9B";
+  const isDebitNote = doc.docType === "debitnote";
+  const isCreditNote = doc.docType === "creditnote";
+  const title = DOC_TYPE_LABEL[doc.docType] || "ใบกำกับภาษี";
+  const cornerColor = isReceipt ? "var(--green)" : isDebitNote ? "var(--amber-dark)" : isCreditNote ? "var(--red)" : "#2A4B9B";
   const paymentLabel = { cash: "เงินสด", cheque: "เช็ค", transfer: "โอนเงิน", credit: "บัตรเครดิต" };
+  const sourceDoc = (documents || []).find((d) => d.id === doc.sourceDocId);
 
   return (
     <div className="fixed inset-0 flex items-center justify-center p-4" style={{ background: "rgba(20,20,18,0.55)", zIndex: 60 }}>
@@ -1362,6 +1541,16 @@ function TaxReceiptPrintView({ doc, customers, settings, onClose }) {
             )}
           </div>
 
+          {(isDebitNote || isCreditNote) && (
+            <div className="card p-3 mb-4" style={{ fontSize: 13, background: "var(--paper)" }}>
+              <div className="flex justify-between flex-wrap gap-2">
+                <span><span style={{ color: "var(--steel)" }}>อ้างอิง{DOC_TYPE_LABEL[sourceDoc?.docType] || "เอกสาร"}เลขที่</span> <span className="mono" style={{ fontWeight: 600 }}>{sourceDoc?.docNumber || "-"}</span></span>
+                {sourceDoc && <span style={{ color: "var(--steel)" }}>วันที่ {fmtDate(sourceDoc.date)}</span>}
+              </div>
+              {doc.adjustReason && <div className="mt-2"><span style={{ color: "var(--steel)" }}>เหตุผล:</span> {doc.adjustReason}</div>}
+            </div>
+          )}
+
           <table style={{ marginBottom: 6 }}>
             <thead>
               <tr>
@@ -1396,7 +1585,7 @@ function TaxReceiptPrintView({ doc, customers, settings, onClose }) {
                 <div className="flex justify-between" style={{ padding: "5px 0" }}><span>ภาษีมูลค่าเพิ่ม ({settings.vatRate}%)</span><span className="mono">{thb(doc.vatAmount)}</span></div>
               )}
               <div className="flex justify-between" style={{ fontWeight: 700, fontSize: 16, borderTop: "1px solid var(--border)", padding: "8px 0 4px" }}>
-                <span>จำนวนเงินรวมทั้งสิ้น</span><span className="mono">{thb(doc.total)}</span>
+                <span>{isDebitNote || isCreditNote ? `จำนวนเงินที่${isDebitNote ? "เพิ่ม" : "ลด"}` : "จำนวนเงินรวมทั้งสิ้น"}</span><span className="mono">{thb(doc.total)}</span>
               </div>
             </div>
           </div>
@@ -1447,7 +1636,7 @@ function TaxReceiptPrintView({ doc, customers, settings, onClose }) {
 
 /* ------------------------------- sales report -------------------------------- */
 
-function SalesReportTab({ documents, products, showToast }) {
+function SalesReportTab({ documents, products, transactions, showToast }) {
   const availableMonths = useMemo(() => {
     const set = new Set([monthKey(today())]);
     documents.forEach((d) => { if (d.docType === "invoice") set.add(monthKey(d.date)); });
@@ -1455,6 +1644,39 @@ function SalesReportTab({ documents, products, showToast }) {
   }, [documents]);
 
   const [selectedMonth, setSelectedMonth] = useState(availableMonths[0] || monthKey(today()));
+
+  const outputVatDocs = useMemo(
+    () => documents.filter((d) => ["taxinvoice", "debitnote", "creditnote"].includes(d.docType) && d.status !== "cancelled" && monthKey(d.date) === selectedMonth),
+    [documents, selectedMonth]
+  );
+  const outputVat = outputVatDocs.reduce((s, d) => {
+    const v = d.vatAmount || 0;
+    return s + (d.docType === "creditnote" ? -v : v);
+  }, 0);
+  const inputVatTx = useMemo(
+    () => transactions.filter((t) => t.type === "expense" && t.hasInputVat && monthKey(t.date) === selectedMonth),
+    [transactions, selectedMonth]
+  );
+  const inputVat = inputVatTx.reduce((s, t) => s + (Number(t.inputVat) || 0), 0);
+  const vatPayable = outputVat - inputVat;
+
+  const arAging = useMemo(() => {
+    const buckets = { current: [], d30: [], d60: [], d90: [] };
+    const now = new Date(today());
+    documents
+      .filter((d) => (d.docType === "invoice" || d.docType === "taxinvoice") && !["completed", "cancelled"].includes(d.status))
+      .forEach((d) => {
+        const due = new Date(d.dueDate || d.date);
+        const daysOverdue = Math.floor((now - due) / (1000 * 60 * 60 * 24));
+        if (daysOverdue <= 0) buckets.current.push(d);
+        else if (daysOverdue <= 30) buckets.d30.push(d);
+        else if (daysOverdue <= 60) buckets.d60.push(d);
+        else buckets.d90.push(d);
+      });
+    return buckets;
+  }, [documents]);
+  const arTotal = (arr) => arr.reduce((s, d) => s + d.total, 0);
+  const arGrandTotal = arTotal(arAging.current) + arTotal(arAging.d30) + arTotal(arAging.d60) + arTotal(arAging.d90);
 
   const monthInvoices = useMemo(
     () =>
@@ -1571,6 +1793,49 @@ function SalesReportTab({ documents, products, showToast }) {
           </div>
         </>
       )}
+
+      <div className="card p-4 mt-4">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div style={{ fontWeight: 600, fontSize: 14 }}>รายงานภาษีมูลค่าเพิ่ม (แบบ ภ.พ.30) — {monthLabel(selectedMonth)}</div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2" style={{ fontSize: 13 }}>
+          <div className="flex justify-between p-2" style={{ background: "var(--paper)", borderRadius: 8 }}>
+            <span>ภาษีขาย (จากใบกำกับภาษี/ใบเพิ่มหนี้/ใบลดหนี้)</span><span className="mono" style={{ fontWeight: 600 }}>{thb(outputVat)}</span>
+          </div>
+          <div className="flex justify-between p-2" style={{ background: "var(--paper)", borderRadius: 8 }}>
+            <span>ภาษีซื้อ (จากรายจ่ายที่มีภาษีซื้อ)</span><span className="mono" style={{ fontWeight: 600 }}>{thb(inputVat)}</span>
+          </div>
+          <div className="flex justify-between p-2" style={{ background: vatPayable >= 0 ? "var(--red-bg)" : "var(--green-bg)", borderRadius: 8 }}>
+            <span>{vatPayable >= 0 ? "ภาษีที่ต้องชำระ" : "ภาษีที่ขอคืน/ยกไป"}</span>
+            <span className="mono" style={{ fontWeight: 700, color: vatPayable >= 0 ? "var(--red)" : "var(--green)" }}>{thb(Math.abs(vatPayable))}</span>
+          </div>
+        </div>
+        {outputVatDocs.length === 0 && inputVatTx.length === 0 && (
+          <p style={{ fontSize: 12, color: "var(--steel)", marginTop: 8 }}>ยังไม่มีใบกำกับภาษีหรือรายจ่ายที่มีภาษีซื้อในเดือนนี้</p>
+        )}
+      </div>
+
+      <div className="card p-4 mt-4">
+        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>อายุลูกหนี้ค้างชำระ (AR Aging)</div>
+        {arGrandTotal === 0 ? (
+          <p style={{ fontSize: 13, color: "var(--steel)" }}>ไม่มีใบแจ้งหนี้/ใบกำกับภาษีค้างชำระในขณะนี้</p>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2" style={{ fontSize: 13 }}>
+            {[
+              ["ยังไม่ครบกำหนด", arAging.current, "ink"],
+              ["เกิน 1-30 วัน", arAging.d30, "amber"],
+              ["เกิน 31-60 วัน", arAging.d60, "red"],
+              ["เกิน 60 วันขึ้นไป", arAging.d90, "red"],
+            ].map(([label, arr, tone]) => (
+              <div key={label} className="p-3" style={{ background: "var(--paper)", borderRadius: 8 }}>
+                <div style={{ color: "var(--steel)", fontSize: 11, marginBottom: 4 }}>{label}</div>
+                <div className="mono" style={{ fontWeight: 700, fontSize: 15, color: tone === "red" ? "var(--red)" : tone === "amber" ? "var(--amber-dark)" : "var(--ink)" }}>{thb(arTotal(arr))}</div>
+                <div style={{ color: "var(--steel)", fontSize: 11 }}>{arr.length} รายการ</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1798,6 +2063,8 @@ function SettingsTab({ settings, updateSettings, onReset, showToast }) {
       nextBillingNumber: Number(f.nextBillingNumber) || 1,
       nextTaxInvoiceNumber: Number(f.nextTaxInvoiceNumber) || 1,
       nextReceiptNumber: Number(f.nextReceiptNumber) || 1,
+      nextDebitNoteNumber: Number(f.nextDebitNoteNumber) || 1,
+      nextCreditNoteNumber: Number(f.nextCreditNoteNumber) || 1,
       lowStockDefault: Number(f.lowStockDefault) || 0,
     });
     showToast("บันทึกการตั้งค่าเรียบร้อย");
@@ -1833,6 +2100,10 @@ function SettingsTab({ settings, updateSettings, onReset, showToast }) {
           <Field label="เลขที่ใบกำกับภาษีถัดไป"><input type="number" className={inputCls} value={f.nextTaxInvoiceNumber} onChange={(e) => setF({ ...f, nextTaxInvoiceNumber: e.target.value })} /></Field>
           <Field label="คำนำหน้าใบเสร็จรับเงิน"><input className={inputCls} value={f.receiptPrefix} onChange={(e) => setF({ ...f, receiptPrefix: e.target.value })} /></Field>
           <Field label="เลขที่ใบเสร็จรับเงินถัดไป"><input type="number" className={inputCls} value={f.nextReceiptNumber} onChange={(e) => setF({ ...f, nextReceiptNumber: e.target.value })} /></Field>
+          <Field label="คำนำหน้าใบเพิ่มหนี้"><input className={inputCls} value={f.debitNotePrefix} onChange={(e) => setF({ ...f, debitNotePrefix: e.target.value })} /></Field>
+          <Field label="เลขที่ใบเพิ่มหนี้ถัดไป"><input type="number" className={inputCls} value={f.nextDebitNoteNumber} onChange={(e) => setF({ ...f, nextDebitNoteNumber: e.target.value })} /></Field>
+          <Field label="คำนำหน้าใบลดหนี้"><input className={inputCls} value={f.creditNotePrefix} onChange={(e) => setF({ ...f, creditNotePrefix: e.target.value })} /></Field>
+          <Field label="เลขที่ใบลดหนี้ถัดไป"><input type="number" className={inputCls} value={f.nextCreditNoteNumber} onChange={(e) => setF({ ...f, nextCreditNoteNumber: e.target.value })} /></Field>
         </div>
         <button className="btn-primary px-5 py-2.5 text-sm mt-1" onClick={save}>บันทึกการตั้งค่า</button>
       </div>
