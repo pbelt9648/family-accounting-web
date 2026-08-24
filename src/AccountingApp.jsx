@@ -3,7 +3,7 @@ import {
   LayoutDashboard, FileText, Wallet, Package, Users, SlidersHorizontal,
   Plus, Pencil, Trash2, X, Search, CheckCircle2, AlertTriangle, TrendingUp,
   TrendingDown, ArrowRight, Send, FileCheck2, Ban, RefreshCw, Loader2,
-  BarChart3, Receipt, Printer, Download,
+  BarChart3, Receipt, Printer, Download, Landmark,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -106,10 +106,19 @@ const DOC_TYPE_LABEL = {
   creditnote: "ใบลดหนี้",
 };
 
-const EXPENSE_CATEGORIES = ["วัตถุดิบ/ชิ้นส่วน", "ค่าแรง", "ค่าขนส่ง", "ค่าน้ำ-ค่าไฟ", "ค่าเช่า", "ค่าซ่อมบำรุง", "การตลาด", "อื่นๆ"];
+const PAYMENT_METHOD_LABEL = { cash: "เงินสด", cheque: "เช็ค", transfer: "โอนเงิน", credit: "บัตรเครดิต" };
+
+function docPaidAmount(doc) {
+  return (doc.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+}
+function docBalanceDue(doc) {
+  return Math.max(0, (Number(doc.total) || 0) - docPaidAmount(doc));
+}
+
+const EXPENSE_CATEGORIES = ["วัตถุดิบ/ชิ้นส่วน", "ค่าแรง", "ค่าขนส่ง", "ค่าน้ำ-ค่าไฟ", "ค่าเช่า", "ค่าซ่อมบำรุง", "การตลาด", "ค่าเสื่อมราคา", "อื่นๆ"];
 const INCOME_CATEGORIES = ["ขายสินค้า/บริการ", "รายได้อื่น"];
 
-const STORAGE_KEYS = ["settings", "customers", "products", "documents", "transactions", "billingNotes"];
+const STORAGE_KEYS = ["settings", "customers", "products", "documents", "transactions", "billingNotes", "assets"];
 
 async function loadAll() {
   const out = {};
@@ -135,6 +144,7 @@ const NAV = [
   { id: "salesReport", label: "รายงานขาย", icon: BarChart3 },
   { id: "transactions", label: "รายรับ-รายจ่าย", icon: Wallet },
   { id: "inventory", label: "สต็อกสินค้า", icon: Package },
+  { id: "assets", label: "สินทรัพย์ถาวร", icon: Landmark },
   { id: "customers", label: "ลูกค้า", icon: Users },
   { id: "settings", label: "ตั้งค่า", icon: SlidersHorizontal },
 ];
@@ -148,6 +158,7 @@ export default function AccountingApp() {
   const [documents, setDocuments] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [billingNotes, setBillingNotes] = useState([]);
+  const [assets, setAssets] = useState([]);
   const [toast, setToast] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
   const toastTimer = useRef(null);
@@ -161,6 +172,7 @@ export default function AccountingApp() {
       setDocuments(d.documents || []);
       setTransactions(d.transactions || []);
       setBillingNotes(d.billingNotes || []);
+      setAssets(d.assets || []);
       setLoading(false);
     })();
   }, []);
@@ -189,6 +201,7 @@ export default function AccountingApp() {
   const updateDocuments = (next) => { setDocuments(next); persist("documents", next); };
   const updateTransactions = (next) => { setTransactions(next); persist("transactions", next); };
   const updateBillingNotes = (next) => { setBillingNotes(next); persist("billingNotes", next); };
+  const updateAssets = (next) => { setAssets(next); persist("assets", next); };
 
   function resetAll() {
     confirmAction("ล้างข้อมูลทั้งหมดถาวร? การกระทำนี้ยกเลิกไม่ได้", async () => {
@@ -196,7 +209,7 @@ export default function AccountingApp() {
         try { await window.storage.delete(k, false); } catch {}
       }
       setSettings(DEFAULT_SETTINGS);
-      setCustomers([]); setProducts([]); setDocuments([]); setTransactions([]); setBillingNotes([]);
+      setCustomers([]); setProducts([]); setDocuments([]); setTransactions([]); setBillingNotes([]); setAssets([]);
       showToast("ล้างข้อมูลเรียบร้อย");
     });
   }
@@ -252,6 +265,9 @@ export default function AccountingApp() {
       )}
       {tab === "inventory" && (
         <InventoryTab products={products} updateProducts={updateProducts} settings={settings} showToast={showToast} confirmAction={confirmAction} />
+      )}
+      {tab === "assets" && (
+        <AssetsTab assets={assets} updateAssets={updateAssets} updateTransactions={updateTransactions} transactions={transactions} showToast={showToast} confirmAction={confirmAction} />
       )}
       {tab === "customers" && (
         <CustomersTab customers={customers} updateCustomers={updateCustomers} showToast={showToast} confirmAction={confirmAction} />
@@ -471,8 +487,8 @@ function Dashboard({ documents, transactions, products, customers, settings }) {
   const income = monthTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
   const expense = monthTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
   const outstanding = documents
-    .filter((d) => d.docType === "invoice" && ["draft", "issued"].includes(d.status))
-    .reduce((s, d) => s + d.total, 0);
+    .filter((d) => (d.docType === "invoice" || d.docType === "taxinvoice") && !["completed", "cancelled"].includes(d.status))
+    .reduce((s, d) => s + docBalanceDue(d), 0);
   const lowStock = products.filter((p) => p.stock <= (p.lowStockThreshold ?? settings.lowStockDefault));
 
   const chartData = useMemo(() => {
@@ -762,6 +778,153 @@ function ProductForm({ data, onSave }) {
   );
 }
 
+/* ---------------------------------- assets ----------------------------------- */
+
+function monthsBetween(from, to) {
+  const f = new Date(from);
+  const t = new Date(to);
+  return Math.max(0, (t.getFullYear() - f.getFullYear()) * 12 + (t.getMonth() - f.getMonth()));
+}
+
+function assetDepInfo(a) {
+  const lifeMonths = Math.max(1, Number(a.usefulLifeYears) || 1) * 12;
+  const cost = Number(a.cost) || 0;
+  const salvage = Number(a.salvageValue) || 0;
+  const depreciable = Math.max(0, cost - salvage);
+  const monthlyDep = depreciable / lifeMonths;
+  const monthsElapsed = Math.min(monthsBetween(a.purchaseDate, today()) + 1, lifeMonths);
+  const accumulated = a.disposed ? depreciable : Math.min(monthlyDep * monthsElapsed, depreciable);
+  const bookValue = cost - accumulated;
+  return { monthlyDep, accumulated, bookValue, isFullyDepreciated: monthsElapsed >= lifeMonths };
+}
+
+const ASSET_CATEGORIES = ["เครื่องจักร/อุปกรณ์", "ยานพาหนะ", "เครื่องใช้สำนักงาน", "คอมพิวเตอร์/IT", "อาคาร/สิ่งปลูกสร้าง", "อื่นๆ"];
+
+function AssetsTab({ assets, updateAssets, transactions, updateTransactions, showToast, confirmAction }) {
+  const [modal, setModal] = useState(null);
+  const activeAssets = assets.filter((a) => !a.disposed);
+  const totalBookValue = activeAssets.reduce((s, a) => s + assetDepInfo(a).bookValue, 0);
+  const totalCost = activeAssets.reduce((s, a) => s + (Number(a.cost) || 0), 0);
+  const monthlyDepTotal = activeAssets.reduce((s, a) => (assetDepInfo(a).isFullyDepreciated ? s : s + assetDepInfo(a).monthlyDep), 0);
+
+  function save(form) {
+    if (!form.name.trim()) return showToast("กรุณากรอกชื่อสินทรัพย์", "error");
+    const clean = { ...form, cost: Number(form.cost) || 0, salvageValue: Number(form.salvageValue) || 0, usefulLifeYears: Number(form.usefulLifeYears) || 1 };
+    if (modal.mode === "add") {
+      updateAssets([{ ...clean, id: uid() }, ...assets]);
+      showToast("เพิ่มสินทรัพย์เรียบร้อย");
+    } else {
+      updateAssets(assets.map((a) => (a.id === clean.id ? clean : a)));
+      showToast("แก้ไขสินทรัพย์เรียบร้อย");
+    }
+    setModal(null);
+  }
+
+  function remove(id) {
+    confirmAction("ลบสินทรัพย์รายการนี้?", () => {
+      updateAssets(assets.filter((a) => a.id !== id));
+      showToast("ลบสินทรัพย์แล้ว");
+    });
+  }
+
+  function postMonthlyDepreciation() {
+    const mKey = monthKey(today());
+    const marker = `depr-${mKey}`;
+    if (transactions.some((t) => t.sourceDocId === marker)) return showToast("บันทึกค่าเสื่อมราคาของเดือนนี้ไปแล้ว", "error");
+    if (monthlyDepTotal <= 0) return showToast("ไม่มีค่าเสื่อมราคาที่ต้องบันทึกในเดือนนี้", "error");
+    const tx = { id: uid(), date: today(), type: "expense", category: "ค่าเสื่อมราคา", amount: monthlyDepTotal, note: `ค่าเสื่อมราคาประจำเดือน ${monthLabel(mKey)}`, sourceDocId: marker };
+    updateTransactions([tx, ...transactions]);
+    showToast("บันทึกค่าเสื่อมราคาประจำเดือนเรียบร้อย");
+  }
+
+  return (
+    <div>
+      <SectionHeader
+        title="สินทรัพย์ถาวร"
+        subtitle="ทะเบียนสินทรัพย์และค่าเสื่อมราคาแบบเส้นตรง (Straight-line)"
+        action={
+          <div className="flex gap-2 flex-wrap">
+            <button className="btn-ghost flex items-center gap-1.5 px-4 py-2 text-sm" onClick={postMonthlyDepreciation}>
+              <Wallet size={16} /> บันทึกค่าเสื่อมราคาประจำเดือน
+            </button>
+            <button className="btn-primary flex items-center gap-1.5 px-4 py-2 text-sm" onClick={() => setModal({ mode: "add", data: { name: "", category: ASSET_CATEGORIES[0], purchaseDate: today(), cost: "", salvageValue: "0", usefulLifeYears: "5", note: "" } })}>
+              <Plus size={16} /> เพิ่มสินทรัพย์
+            </button>
+          </div>
+        }
+      />
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+        <StatCard label="มูลค่าทุนรวม" value={thb(totalCost)} icon={Landmark} tone="ink" />
+        <StatCard label="มูลค่าตามบัญชีรวม" value={thb(totalBookValue)} icon={TrendingDown} tone="amber" />
+        <StatCard label="ค่าเสื่อมราคา/เดือน" value={thb(monthlyDepTotal)} icon={Wallet} tone="red" />
+      </div>
+
+      {assets.length === 0 ? (
+        <Empty text="ยังไม่มีสินทรัพย์ถาวร เพิ่มรายการ เช่น เครื่องจักร รถยนต์ อุปกรณ์สำนักงาน เพื่อคำนวณค่าเสื่อมราคาอัตโนมัติ" />
+      ) : (
+        <div className="card overflow-x-auto">
+          <table>
+            <thead><tr><th>ชื่อสินทรัพย์</th><th>หมวดหมู่</th><th>วันที่ซื้อ</th><th>ราคาทุน</th><th>ค่าเสื่อมสะสม</th><th>มูลค่าตามบัญชี</th><th></th></tr></thead>
+            <tbody>
+              {assets.map((a) => {
+                const info = assetDepInfo(a);
+                return (
+                  <tr key={a.id}>
+                    <td style={{ fontWeight: 500 }}>{a.name}{a.disposed && <span className="badge ml-2" style={{ background: "var(--red-bg)", color: "var(--red)" }}>จำหน่ายแล้ว</span>}</td>
+                    <td>{a.category}</td>
+                    <td>{fmtDate(a.purchaseDate)}</td>
+                    <td className="mono">{thb(a.cost)}</td>
+                    <td className="mono">{thb(info.accumulated)}</td>
+                    <td className="mono" style={{ fontWeight: 600 }}>{thb(info.bookValue)}</td>
+                    <td>
+                      <div className="flex gap-2 justify-end">
+                        <button className="btn-ghost p-1.5" onClick={() => setModal({ mode: "edit", data: { ...a, cost: String(a.cost), salvageValue: String(a.salvageValue), usefulLifeYears: String(a.usefulLifeYears) } })}><Pencil size={14} /></button>
+                        <button className="btn-ghost btn-danger p-1.5" onClick={() => remove(a.id)}><Trash2 size={14} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modal && (
+        <Modal title={modal.mode === "add" ? "เพิ่มสินทรัพย์" : "แก้ไขสินทรัพย์"} onClose={() => setModal(null)}>
+          <AssetForm data={modal.data} onSave={save} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function AssetForm({ data, onSave }) {
+  const [f, setF] = useState(data);
+  return (
+    <div>
+      <Field label="ชื่อสินทรัพย์ *"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+      <Field label="หมวดหมู่">
+        <select className={inputCls} value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>
+          {ASSET_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="วันที่ซื้อ"><input type="date" className={inputCls} value={f.purchaseDate} onChange={(e) => setF({ ...f, purchaseDate: e.target.value })} /></Field>
+        <Field label="ราคาทุน (บาท) *"><input type="number" step="0.01" className={inputCls} value={f.cost} onChange={(e) => setF({ ...f, cost: e.target.value })} /></Field>
+        <Field label="มูลค่าซาก (บาท)"><input type="number" step="0.01" className={inputCls} value={f.salvageValue} onChange={(e) => setF({ ...f, salvageValue: e.target.value })} /></Field>
+        <Field label="อายุการใช้งาน (ปี)"><input type="number" step="1" className={inputCls} value={f.usefulLifeYears} onChange={(e) => setF({ ...f, usefulLifeYears: e.target.value })} /></Field>
+      </div>
+      <Field label="หมายเหตุ"><textarea className={inputCls} rows={2} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /></Field>
+      <label className="flex items-center gap-2 mb-3" style={{ fontSize: 13 }}>
+        <input type="checkbox" checked={f.disposed || false} onChange={(e) => setF({ ...f, disposed: e.target.checked })} /> จำหน่าย/เลิกใช้งานแล้ว
+      </label>
+      <button className="btn-primary w-full py-2.5 text-sm mt-2" onClick={() => onSave(f)}>บันทึก</button>
+    </div>
+  );
+}
+
 /* ------------------------------- transactions -------------------------------- */
 
 function TransactionsTab({ transactions, updateTransactions, settings, showToast, confirmAction }) {
@@ -1013,6 +1176,7 @@ function WHTCertificatePrintView({ tx, settings, onClose }) {
 function DocumentsTab({ documents, customers, products, settings, updateDocuments, updateSettings, updateTransactions, transactions, updateProducts, showToast, confirmAction }) {
   const [modal, setModal] = useState(null);
   const [viewDoc, setViewDoc] = useState(null);
+  const [paymentDoc, setPaymentDoc] = useState(null);
   const [typeFilter, setTypeFilter] = useState("all");
   const customerName = (id) => customers.find((c) => c.id === id)?.name || "ไม่ระบุ";
 
@@ -1059,17 +1223,35 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
     showToast("อัปเดตสถานะแล้ว");
   }
 
-  function completeInvoice(doc) {
+  function recordPayment(doc, { amount, method, note, date }) {
     if (doc.settled) return;
-    const tx = { id: uid(), date: today(), type: "income", category: "ขายสินค้า/บริการ", amount: doc.total, note: `ชำระตาม ${doc.docNumber}`, sourceDocId: doc.id };
+    const amt = Number(amount);
+    const balance = docBalanceDue(doc);
+    if (!amt || amt <= 0) return showToast("กรุณากรอกจำนวนเงินให้ถูกต้อง", "error");
+    if (amt > balance + 0.01) return showToast("จำนวนเงินเกินยอดคงเหลือที่ต้องชำระ", "error");
+
+    const paymentDate = date || today();
+    const payment = { id: uid(), date: paymentDate, amount: amt, method: method || "", note: note || "" };
+    const tx = { id: uid(), date: paymentDate, type: "income", category: "ขายสินค้า/บริการ", amount: amt, note: `รับชำระตาม ${doc.docNumber}`, sourceDocId: doc.id };
     updateTransactions([tx, ...transactions]);
-    const updatedProducts = products.map((p) => {
-      const item = doc.items.find((it) => it.productId === p.id);
-      return item ? { ...p, stock: p.stock - item.qty } : p;
-    });
-    updateProducts(updatedProducts);
-    updateDocuments(documents.map((d) => (d.id === doc.id ? { ...d, status: "completed", settled: true, paidDate: today() } : d)));
-    showToast("บันทึกการชำระเงินและตัดสต็อกเรียบร้อย");
+
+    const newPayments = [...(doc.payments || []), payment];
+    const isNowSettled = docBalanceDue({ ...doc, payments: newPayments }) <= 0.01;
+    let updatedDoc = { ...doc, payments: newPayments };
+
+    if (isNowSettled) {
+      updatedDoc = { ...updatedDoc, status: "completed", settled: true, paidDate: paymentDate };
+      if (doc.docType === "invoice") {
+        const updatedProducts = products.map((p) => {
+          const item = doc.items.find((it) => it.productId === p.id);
+          return item ? { ...p, stock: p.stock - item.qty } : p;
+        });
+        updateProducts(updatedProducts);
+      }
+    }
+    updateDocuments(documents.map((d) => (d.id === doc.id ? updatedDoc : d)));
+    showToast(isNowSettled ? "บันทึกการชำระเงินครบถ้วนเรียบร้อย" : "บันทึกรับชำระบางส่วนเรียบร้อย");
+    setPaymentDoc(null);
   }
 
   function convertQuote(quote, targetType) {
@@ -1137,7 +1319,12 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
                   <td>{DOC_TYPE_LABEL[d.docType] || d.docType}</td>
                   <td>{customerName(d.customerId)}</td>
                   <td>{fmtDate(d.date)}</td>
-                  <td className="mono" style={{ fontWeight: 600 }}>{thb(d.total)}</td>
+                  <td className="mono" style={{ fontWeight: 600 }}>
+                    {thb(d.total)}
+                    {(d.docType === "invoice" || d.docType === "taxinvoice") && docPaidAmount(d) > 0 && d.status !== "completed" && (
+                      <div style={{ fontSize: 11, fontWeight: 500, color: "var(--amber-dark)" }}>คงเหลือ {thb(docBalanceDue(d))}</div>
+                    )}
+                  </td>
                   <td>{statusBadge(d.status)}</td>
                   <td>
                     <div className="flex gap-1.5 justify-end flex-wrap">
@@ -1157,13 +1344,13 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
                       {d.docType === "invoice" && d.status === "draft" && (
                         <button className="btn-ghost p-1.5" title="ออกบิล" onClick={() => setStatus(d, "issued")}><FileCheck2 size={14} /></button>
                       )}
-                      {d.docType === "invoice" && (d.status === "issued" || d.status === "draft") && (
-                        <button className="btn-ghost p-1.5" title="บันทึกว่าชำระแล้ว" onClick={() => completeInvoice(d)}><CheckCircle2 size={14} /></button>
+                      {(d.docType === "invoice" || d.docType === "taxinvoice") && !d.settled && d.status !== "cancelled" && (
+                        <button className="btn-ghost p-1.5" title="รับชำระเงิน" onClick={() => setPaymentDoc(d)}><CheckCircle2 size={14} /></button>
                       )}
                       {["draft", "sent", "issued"].includes(d.status) && (
                         <button className="btn-ghost p-1.5" title="ยกเลิก" onClick={() => setStatus(d, "cancelled")}><Ban size={14} /></button>
                       )}
-                      {d.status === "draft" && (
+                      {d.status === "draft" && !(d.payments?.length > 0) && (
                         <button className="btn-ghost p-1.5" onClick={() => setModal({ mode: "edit", data: d })}><Pencil size={14} /></button>
                       )}
                       <button className="btn-ghost btn-danger p-1.5" onClick={() => remove(d.id)}><Trash2 size={14} /></button>
@@ -1196,6 +1383,41 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
       {viewDoc && (viewDoc.docType === "quote" || viewDoc.docType === "invoice") && (
         <DocumentPrintView doc={viewDoc} customers={customers} settings={settings} onClose={() => setViewDoc(null)} />
       )}
+
+      {paymentDoc && (
+        <Modal title={`รับชำระเงิน — ${paymentDoc.docNumber}`} onClose={() => setPaymentDoc(null)}>
+          <PaymentForm doc={paymentDoc} onSave={(p) => recordPayment(paymentDoc, p)} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function PaymentForm({ doc, onSave }) {
+  const balance = docBalanceDue(doc);
+  const [amount, setAmount] = useState(String(balance));
+  const [method, setMethod] = useState("cash");
+  const [date, setDate] = useState(today());
+  const [note, setNote] = useState("");
+
+  return (
+    <div>
+      <div className="card p-3 mb-3 flex flex-col gap-1" style={{ background: "var(--paper)", fontSize: 13 }}>
+        <div className="flex justify-between"><span>ยอดรวมเอกสาร</span><span className="mono">{thb(doc.total)}</span></div>
+        <div className="flex justify-between"><span>ชำระแล้ว</span><span className="mono">{thb(docPaidAmount(doc))}</span></div>
+        <div className="flex justify-between" style={{ fontWeight: 700 }}><span>คงเหลือ</span><span className="mono">{thb(balance)}</span></div>
+      </div>
+      <Field label="จำนวนเงินที่รับชำระ (บาท) *"><input type="number" step="0.01" className={inputCls} value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="วิธีชำระเงิน">
+          <select className={inputCls} value={method} onChange={(e) => setMethod(e.target.value)}>
+            {Object.entries(PAYMENT_METHOD_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </Field>
+        <Field label="วันที่รับชำระ"><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+      </div>
+      <Field label="บันทึกเพิ่มเติม"><input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+      <button className="btn-primary w-full py-2.5 text-sm mt-2" onClick={() => onSave({ amount, method, date, note })}>บันทึกรับชำระเงิน</button>
     </div>
   );
 }
@@ -1221,6 +1443,8 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
   const [paymentDate, setPaymentDate] = useState(existing?.paymentDate || "");
   const [sourceDocId, setSourceDocId] = useState(existing?.sourceDocId || "");
   const [adjustReason, setAdjustReason] = useState(existing?.adjustReason || "");
+  const [isSimplified, setIsSimplified] = useState(existing?.isSimplified || false);
+  const canBeSimplified = effectiveType === "taxinvoice" || effectiveType === "receipt";
 
   const sourceCandidates = (documents || []).filter(
     (d) => (d.docType === "taxinvoice" || d.docType === "invoice") && (!customerId || d.customerId === customerId)
@@ -1253,6 +1477,7 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
       ...(isTaxDoc ? { refNote, jobName, contactName, contactPhone } : {}),
       ...(effectiveType === "receipt" ? { paymentMethod, bankName, paymentRefNumber, paymentDate } : {}),
       ...(isAdjustNote ? { sourceDocId, adjustReason } : {}),
+      ...(canBeSimplified ? { isSimplified } : {}),
     });
   }
 
@@ -1279,6 +1504,13 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
           <Field label="ผู้ติดต่อ"><input className={inputCls} value={contactName} onChange={(e) => setContactName(e.target.value)} /></Field>
           <Field label="เบอร์โทร"><input className={inputCls} value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} /></Field>
         </div>
+      )}
+
+      {canBeSimplified && (
+        <label className="flex items-center gap-2 mb-3" style={{ fontSize: 13 }}>
+          <input type="checkbox" checked={isSimplified} onChange={(e) => setIsSimplified(e.target.checked)} />
+          ออกเป็นใบกำกับภาษีอย่างย่อ (ไม่แสดงชื่อ-ที่อยู่ผู้ซื้อบนเอกสาร เหมาะกับการขายหน้าร้าน)
+        </label>
       )}
 
       {isAdjustNote && (
@@ -1450,6 +1682,21 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
           </div>
           <div className="text-right mb-8" style={{ fontSize: 12, color: "var(--steel)" }}>({thaiBahtText(doc.total)})</div>
 
+          {doc.payments?.length > 0 && (
+            <div className="card p-3 mb-6" style={{ fontSize: 12, background: "var(--paper)" }}>
+              <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>ประวัติการรับชำระ</div>
+              {doc.payments.map((p) => (
+                <div key={p.id} className="flex justify-between" style={{ padding: "2px 0" }}>
+                  <span>{fmtDate(p.date)} · {PAYMENT_METHOD_LABEL[p.method] || p.method || "-"}</span>
+                  <span className="mono">{thb(p.amount)}</span>
+                </div>
+              ))}
+              <div className="flex justify-between" style={{ fontWeight: 700, paddingTop: 6, marginTop: 4, borderTop: "1px solid var(--border)" }}>
+                <span>คงเหลือ</span><span className="mono">{thb(docBalanceDue(doc))}</span>
+              </div>
+            </div>
+          )}
+
           {doc.note && (
             <div className="mb-8" style={{ fontSize: 12 }}>
               <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>หมายเหตุ</div>
@@ -1478,7 +1725,7 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
   const isReceipt = doc.docType === "receipt";
   const isDebitNote = doc.docType === "debitnote";
   const isCreditNote = doc.docType === "creditnote";
-  const title = DOC_TYPE_LABEL[doc.docType] || "ใบกำกับภาษี";
+  const title = (doc.isSimplified ? "ใบกำกับภาษีอย่างย่อ" : DOC_TYPE_LABEL[doc.docType]) || "ใบกำกับภาษี";
   const cornerColor = isReceipt ? "var(--green)" : isDebitNote ? "var(--amber-dark)" : isCreditNote ? "var(--red)" : "#2A4B9B";
   const paymentLabel = { cash: "เงินสด", cheque: "เช็ค", transfer: "โอนเงิน", credit: "บัตรเครดิต" };
   const sourceDoc = (documents || []).find((d) => d.id === doc.sourceDocId);
@@ -1527,19 +1774,21 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
             </div>
           </div>
 
-          <div className="card p-3 mb-4" style={{ fontSize: 13 }}>
-            <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>ลูกค้า</div>
-            <div style={{ fontWeight: 600 }}>{customer?.name || "ไม่ระบุ"}</div>
-            {customer?.address && <div style={{ color: "var(--steel)" }}>{customer.address}</div>}
-            {customer?.taxId && <div style={{ color: "var(--steel)" }}>เลขประจำตัวผู้เสียภาษี {customer.taxId}</div>}
-            {(doc.jobName || doc.contactName || doc.contactPhone) && (
-              <div className="grid grid-cols-3 gap-2 mt-3 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-                <div><div style={{ color: "var(--steel)", fontSize: 11 }}>ชื่องาน</div>{doc.jobName || "-"}</div>
-                <div><div style={{ color: "var(--steel)", fontSize: 11 }}>ผู้ติดต่อ</div>{doc.contactName || "-"}</div>
-                <div><div style={{ color: "var(--steel)", fontSize: 11 }}>เบอร์โทร</div>{doc.contactPhone || "-"}</div>
-              </div>
-            )}
-          </div>
+          {!doc.isSimplified && (
+            <div className="card p-3 mb-4" style={{ fontSize: 13 }}>
+              <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>ลูกค้า</div>
+              <div style={{ fontWeight: 600 }}>{customer?.name || "ไม่ระบุ"}</div>
+              {customer?.address && <div style={{ color: "var(--steel)" }}>{customer.address}</div>}
+              {customer?.taxId && <div style={{ color: "var(--steel)" }}>เลขประจำตัวผู้เสียภาษี {customer.taxId}</div>}
+              {(doc.jobName || doc.contactName || doc.contactPhone) && (
+                <div className="grid grid-cols-3 gap-2 mt-3 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+                  <div><div style={{ color: "var(--steel)", fontSize: 11 }}>ชื่องาน</div>{doc.jobName || "-"}</div>
+                  <div><div style={{ color: "var(--steel)", fontSize: 11 }}>ผู้ติดต่อ</div>{doc.contactName || "-"}</div>
+                  <div><div style={{ color: "var(--steel)", fontSize: 11 }}>เบอร์โทร</div>{doc.contactPhone || "-"}</div>
+                </div>
+              )}
+            </div>
+          )}
 
           {(isDebitNote || isCreditNote) && (
             <div className="card p-3 mb-4" style={{ fontSize: 13, background: "var(--paper)" }}>
@@ -1611,6 +1860,21 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
             </div>
           )}
 
+          {doc.docType === "taxinvoice" && doc.payments?.length > 0 && (
+            <div className="card p-3 mb-6" style={{ fontSize: 12, background: "var(--paper)" }}>
+              <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>ประวัติการรับชำระ</div>
+              {doc.payments.map((p) => (
+                <div key={p.id} className="flex justify-between" style={{ padding: "2px 0" }}>
+                  <span>{fmtDate(p.date)} · {PAYMENT_METHOD_LABEL[p.method] || p.method || "-"}</span>
+                  <span className="mono">{thb(p.amount)}</span>
+                </div>
+              ))}
+              <div className="flex justify-between" style={{ fontWeight: 700, paddingTop: 6, marginTop: 4, borderTop: "1px solid var(--border)" }}>
+                <span>คงเหลือ</span><span className="mono">{thb(docBalanceDue(doc))}</span>
+              </div>
+            </div>
+          )}
+
           {doc.note && (
             <div className="mb-8" style={{ fontSize: 12 }}>
               <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>หมายเหตุ</div>
@@ -1675,7 +1939,7 @@ function SalesReportTab({ documents, products, transactions, showToast }) {
       });
     return buckets;
   }, [documents]);
-  const arTotal = (arr) => arr.reduce((s, d) => s + d.total, 0);
+  const arTotal = (arr) => arr.reduce((s, d) => s + docBalanceDue(d), 0);
   const arGrandTotal = arTotal(arAging.current) + arTotal(arAging.d30) + arTotal(arAging.d60) + arTotal(arAging.d90);
 
   const monthInvoices = useMemo(
