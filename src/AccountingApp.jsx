@@ -926,11 +926,12 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
     showToast("บันทึกการชำระเงินและตัดสต็อกเรียบร้อย");
   }
 
-  function convertToInvoice(quote) {
-    const docNumber = genNumber("invoice");
-    const invoice = { ...quote, id: uid(), docType: "invoice", docNumber, status: "draft", settled: false, quoteRef: quote.id, date: today() };
-    updateDocuments([invoice, ...documents.map((d) => (d.id === quote.id ? { ...d, convertedInvoiceId: invoice.id } : d))]);
-    showToast("แปลงเป็นใบแจ้งหนี้เรียบร้อย");
+  function convertQuote(quote, targetType) {
+    const docNumber = genNumber(targetType);
+    const converted = { ...quote, id: uid(), docType: targetType, docNumber, status: "draft", settled: false, quoteRef: quote.id, date: today() };
+    const flagField = targetType === "invoice" ? "convertedInvoiceId" : "convertedTaxInvoiceId";
+    updateDocuments([converted, ...documents.map((d) => (d.id === quote.id ? { ...d, [flagField]: converted.id } : d))]);
+    showToast(`แปลงเป็น${DOC_TYPE_LABEL[targetType]}เรียบร้อย`);
   }
 
   function remove(id) {
@@ -996,7 +997,10 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
                         <button className="btn-ghost p-1.5" title="ลูกค้าตอบรับ" onClick={() => setStatus(d, "accepted")}><CheckCircle2 size={14} /></button>
                       )}
                       {d.docType === "quote" && d.status === "accepted" && !d.convertedInvoiceId && (
-                        <button className="btn-ghost p-1.5" title="แปลงเป็นใบแจ้งหนี้" onClick={() => convertToInvoice(d)}><ArrowRight size={14} /></button>
+                        <button className="btn-ghost p-1.5" title="แปลงเป็นใบแจ้งหนี้" onClick={() => convertQuote(d, "invoice")}><ArrowRight size={14} /></button>
+                      )}
+                      {d.docType === "quote" && d.status === "accepted" && !d.convertedTaxInvoiceId && (
+                        <button className="btn-ghost p-1.5" title="แปลงเป็นใบกำกับภาษี" onClick={() => convertQuote(d, "taxinvoice")}><FileCheck2 size={14} /></button>
                       )}
                       {d.docType === "invoice" && d.status === "draft" && (
                         <button className="btn-ghost p-1.5" title="ออกบิล" onClick={() => setStatus(d, "issued")}><FileCheck2 size={14} /></button>
