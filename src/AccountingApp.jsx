@@ -14,10 +14,12 @@ import * as XLSX from "xlsx";
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const today = () => new Date().toISOString().slice(0, 10);
-const thb = (n) =>
-  new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 2 }).format(
-    Number.isFinite(n) ? n : 0
+const thb = (n) => {
+  const num = Number(n);
+  return new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 2 }).format(
+    Number.isFinite(num) ? num : 0
   );
+};
 const fmtDate = (d) =>
   d ? new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" }) : "-";
 function resizeImageToDataUrl(file, maxSize = 200, quality = 0.72) {
@@ -100,6 +102,7 @@ const DEFAULT_SETTINGS = {
   debitNotePrefix: "DN",
   creditNotePrefix: "CN",
   sellerCode: "001",
+  logoUrl: "",
   nextInvoiceNumber: 1,
   nextQuoteNumber: 1,
   nextBillingNumber: 1,
@@ -333,9 +336,10 @@ function Shell({ children, settings, tab, setTab, netBalance, toast, confirmDial
         .navlink.active{ background:var(--ink); color:#fff; }
         ::-webkit-scrollbar{ height:8px; width:8px; } ::-webkit-scrollbar-thumb{ background:var(--border); border-radius:8px; }
         @media print{
+          @page{ size:A4; margin:12mm; }
           body *{ visibility:hidden; }
           .print-area, .print-area *{ visibility:visible; }
-          .print-area{ position:fixed; top:0; left:0; width:100%; }
+          .print-area{ position:fixed; top:0; left:0; width:100%; max-width:none; max-height:none; overflow:visible; }
           .no-print{ display:none !important; }
         }
       `}</style>
@@ -1562,10 +1566,16 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
   const total = subtotal + vatAmount;
 
   function handleSave() {
+    const cleanItems = items.map((it) => ({
+      ...it,
+      qty: Number(it.qty) || 0,
+      price: Number(it.price) || 0,
+      discount: Number(it.discount) || 0,
+    }));
     onSave({
       ...(existing || {}),
       docType: effectiveType,
-      customerId, date, dueDate, includeVat, note, items,
+      customerId, date, dueDate, includeVat, note, items: cleanItems,
       subtotal, vatAmount, total,
       refNote, jobName, contactName, contactPhone,
       ...(effectiveType === "receipt" ? { paymentMethod, bankName, paymentRefNumber, paymentDate } : {}),
@@ -1711,11 +1721,16 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
           <div className="stripe" style={{ marginBottom: 20, marginLeft: -32, marginRight: -32, marginTop: -32 }} />
 
           <div className="flex justify-between items-start mb-8 mt-2">
-            <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 22 }}>{settings.companyName}</div>
-              <div style={{ fontSize: 12, color: "var(--steel)", whiteSpace: "pre-line", marginTop: 4 }}>{settings.address}</div>
-              <div style={{ fontSize: 12, color: "var(--steel)" }}>
-                {settings.phone && `โทร. ${settings.phone}`} {settings.taxId && `· เลขผู้เสียภาษี ${settings.taxId}`}
+            <div className="flex gap-3">
+              {settings.logoUrl && (
+                <img src={settings.logoUrl} alt="" style={{ width: 56, height: 56, objectFit: "contain", flexShrink: 0 }} />
+              )}
+              <div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 22 }}>{settings.companyName}</div>
+                <div style={{ fontSize: 12, color: "var(--steel)", whiteSpace: "pre-line", marginTop: 4 }}>{settings.address}</div>
+                <div style={{ fontSize: 12, color: "var(--steel)" }}>
+                  {settings.phone && `โทร. ${settings.phone}`} {settings.taxId && `· เลขผู้เสียภาษี ${settings.taxId}`}
+                </div>
               </div>
             </div>
             <div className="text-right">
@@ -1723,27 +1738,24 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
               <table style={{ marginTop: 8, fontSize: 12 }}>
                 <tbody>
                   <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>เลขที่</td><td className="mono" style={{ padding: "2px 0", border: "none", fontWeight: 600 }}>{doc.docNumber}</td></tr>
+                  <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>วันที่</td><td style={{ padding: "2px 0", border: "none" }}>{fmtDate(doc.date)}</td></tr>
                   <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>ผู้ขาย</td><td style={{ padding: "2px 0", border: "none" }}>{settings.sellerCode}</td></tr>
                   {doc.refNote && <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>อ้างอิง</td><td style={{ padding: "2px 0", border: "none" }}>{doc.refNote}</td></tr>}
+                  {doc.dueDate && (
+                    <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>{isInvoice ? "กำหนดชำระ" : "ยืนราคาถึง"}</td><td style={{ padding: "2px 0", border: "none" }}>{fmtDate(doc.dueDate)}</td></tr>
+                  )}
+                  <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>หน้า</td><td style={{ padding: "2px 0", border: "none" }}>1/1</td></tr>
                 </tbody>
               </table>
             </div>
           </div>
 
-          <div className="flex justify-between items-start mb-6 gap-6">
-            <div style={{ fontSize: 13 }}>
-              <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 2 }}>ลูกค้า / Customer</div>
-              <div style={{ fontWeight: 600 }}>{customer?.name || "ไม่ระบุ"}</div>
-              {customer?.address && <div style={{ color: "var(--steel)" }}>{customer.address}</div>}
-              {customer?.phone && <div style={{ color: "var(--steel)" }}>โทร. {customer.phone}</div>}
-              {customer?.taxId && <div style={{ color: "var(--steel)" }}>เลขผู้เสียภาษี {customer.taxId}</div>}
-            </div>
-            <div className="card p-3" style={{ background: "var(--paper)", fontSize: 12, minWidth: 190 }}>
-              <div className="flex justify-between mb-1"><span style={{ color: "var(--steel)" }}>วันที่ออกเอกสาร</span><span>{fmtDate(doc.date)}</span></div>
-              {doc.dueDate && (
-                <div className="flex justify-between"><span style={{ color: "var(--steel)" }}>{isInvoice ? "กำหนดชำระ" : "ยืนราคาถึง"}</span><span>{fmtDate(doc.dueDate)}</span></div>
-              )}
-            </div>
+          <div className="card p-3 mb-6" style={{ fontSize: 13 }}>
+            <div style={{ color: "var(--steel)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>ลูกค้า / Customer</div>
+            <div style={{ fontWeight: 600 }}>{customer?.name || "ไม่ระบุ"}</div>
+            {customer?.address && <div style={{ color: "var(--steel)" }}>{customer.address}</div>}
+            {customer?.phone && <div style={{ color: "var(--steel)" }}>โทร. {customer.phone}</div>}
+            {customer?.taxId && <div style={{ color: "var(--steel)" }}>เลขผู้เสียภาษี {customer.taxId}</div>}
           </div>
 
           {(doc.jobName || doc.contactName || doc.contactPhone) && (
@@ -1775,7 +1787,7 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
                     {it.imageUrl ? (
                       <img src={it.imageUrl} alt="" style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4 }} />
                     ) : (
-                      <div style={{ width: 36, height: 36, borderRadius: 4, background: "var(--paper)" }} />
+                      <div style={{ width: 36, height: 36, borderRadius: 4, background: "var(--paper)", border: "1px solid var(--border)" }} />
                     )}
                   </td>
                   <td>
@@ -1792,7 +1804,8 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
             </tbody>
           </table>
 
-          <div className="flex justify-end mb-2">
+          <div className="flex justify-between items-end mb-8 gap-4 flex-wrap">
+            <div style={{ fontSize: 12, color: "var(--steel)" }}>({thaiBahtText(doc.total)})</div>
             <div style={{ minWidth: 230, fontSize: 13 }}>
               <div className="flex justify-between" style={{ padding: "5px 0" }}><span>ยอดรวมก่อนภาษี</span><span className="mono">{thb(doc.subtotal)}</span></div>
               {doc.includeVat && (
@@ -1803,7 +1816,6 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
               </div>
             </div>
           </div>
-          <div className="text-right mb-8" style={{ fontSize: 12, color: "var(--steel)" }}>({thaiBahtText(doc.total)})</div>
 
           {doc.payments?.length > 0 && (
             <div className="card p-3 mb-6" style={{ fontSize: 12, background: "var(--paper)" }}>
@@ -1829,11 +1841,13 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
 
           <div className="grid grid-cols-2 gap-8 mt-10" style={{ fontSize: 12 }}>
             <div className="text-center">
-              <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, marginTop: 40 }}>ผู้จัดทำเอกสาร</div>
+              <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, marginTop: 40 }}>{isInvoice ? "ผู้รับสินค้า / บริการ" : "ผู้สั่งซื้อ / อนุมัติ"}</div>
+              <div style={{ color: "var(--steel)", fontSize: 11, marginTop: 2 }}>{customer?.name || ""}</div>
               <div style={{ color: "var(--steel)", marginTop: 4 }}>วันที่ ..... /..... /.....</div>
             </div>
             <div className="text-center">
-              <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, marginTop: 40 }}>{isInvoice ? "ผู้อนุมัติชำระเงิน" : "ผู้สั่งซื้อ / อนุมัติ"}</div>
+              <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, marginTop: 40 }}>ผู้อนุมัติ</div>
+              <div style={{ color: "var(--steel)", fontSize: 11, marginTop: 2 }}>{settings.companyName}</div>
               <div style={{ color: "var(--steel)", marginTop: 4 }}>วันที่ ..... /..... /.....</div>
             </div>
           </div>
@@ -1875,13 +1889,18 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
           </div>
 
           <div className="flex justify-between items-start mb-6">
-            <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 22 }}>{settings.companyName}</div>
-              <div style={{ fontSize: 12, color: "var(--steel)", whiteSpace: "pre-line", marginTop: 4 }}>{settings.address}</div>
-              <div style={{ fontSize: 12, color: "var(--steel)" }}>
-                {settings.taxId && `เลขประจำตัวผู้เสียภาษี ${settings.taxId}`}
+            <div className="flex gap-3">
+              {settings.logoUrl && (
+                <img src={settings.logoUrl} alt="" style={{ width: 56, height: 56, objectFit: "contain", flexShrink: 0 }} />
+              )}
+              <div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 22 }}>{settings.companyName}</div>
+                <div style={{ fontSize: 12, color: "var(--steel)", whiteSpace: "pre-line", marginTop: 4 }}>{settings.address}</div>
+                <div style={{ fontSize: 12, color: "var(--steel)" }}>
+                  {settings.taxId && `เลขประจำตัวผู้เสียภาษี ${settings.taxId}`}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--steel)" }}>{settings.phone && `โทร. ${settings.phone}`}</div>
               </div>
-              <div style={{ fontSize: 12, color: "var(--steel)" }}>{settings.phone && `โทร. ${settings.phone}`}</div>
             </div>
             <div className="text-right">
               <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 20 }}>{title}</div>
@@ -1892,6 +1911,7 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
                   <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>วันที่</td><td style={{ padding: "2px 0", border: "none" }}>{fmtDate(doc.date)}</td></tr>
                   <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>ผู้ขาย</td><td style={{ padding: "2px 0", border: "none" }}>{settings.sellerCode}</td></tr>
                   {doc.refNote && <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>อ้างอิง</td><td style={{ padding: "2px 0", border: "none" }}>{doc.refNote}</td></tr>}
+                  <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>หน้า</td><td style={{ padding: "2px 0", border: "none" }}>1/1</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1944,7 +1964,7 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
                     {it.imageUrl ? (
                       <img src={it.imageUrl} alt="" style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4 }} />
                     ) : (
-                      <div style={{ width: 36, height: 36, borderRadius: 4, background: "var(--surface)" }} />
+                      <div style={{ width: 36, height: 36, borderRadius: 4, background: "var(--surface)", border: "1px solid var(--border)" }} />
                     )}
                   </td>
                   <td>
@@ -1961,7 +1981,8 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
             </tbody>
           </table>
 
-          <div className="flex justify-end mb-2">
+          <div className="flex justify-between items-end mb-6 gap-4 flex-wrap">
+            <div style={{ fontSize: 12, color: "var(--steel)" }}>({thaiBahtText(doc.total)})</div>
             <div style={{ minWidth: 230, fontSize: 13 }}>
               <div className="flex justify-between" style={{ padding: "5px 0" }}><span>รวมเป็นเงิน</span><span className="mono">{thb(doc.subtotal)}</span></div>
               {doc.includeVat && (
@@ -1972,7 +1993,6 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
               </div>
             </div>
           </div>
-          <div className="text-right mb-6" style={{ fontSize: 12, color: "var(--steel)" }}>({thaiBahtText(doc.total)})</div>
 
           {isReceipt && (
             <div className="card p-3 mb-6" style={{ fontSize: 13 }}>
@@ -2019,10 +2039,12 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
           <div className="grid grid-cols-2 gap-8 mt-10" style={{ fontSize: 12 }}>
             <div className="text-center">
               <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, marginTop: 40 }}>{isReceipt ? "ผู้จ่ายเงิน" : "ผู้รับสินค้า / บริการ"}</div>
+              <div style={{ color: "var(--steel)", fontSize: 11, marginTop: 2 }}>{customer?.name || ""}</div>
               <div style={{ color: "var(--steel)", marginTop: 4 }}>วันที่ ..... /..... /.....</div>
             </div>
             <div className="text-center">
               <div style={{ borderTop: "1px solid var(--ink)", paddingTop: 6, marginTop: 40 }}>{isReceipt ? "ผู้รับเงิน" : "ผู้อนุมัติ"}</div>
+              <div style={{ color: "var(--steel)", fontSize: 11, marginTop: 2 }}>{settings.companyName}</div>
               <div style={{ color: "var(--steel)", marginTop: 4 }}>วันที่ ..... /..... /.....</div>
             </div>
           </div>
@@ -2451,6 +2473,19 @@ function BillingPrintView({ note, documents, customers, settings, onClose }) {
 
 function SettingsTab({ settings, updateSettings, onReset, showToast }) {
   const [f, setF] = useState(settings);
+  const [logoLoading, setLogoLoading] = useState(false);
+
+  async function handleLogo(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLogoLoading(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(file, 300, 0.85);
+      setF((cur) => ({ ...cur, logoUrl: dataUrl }));
+    } finally {
+      setLogoLoading(false);
+    }
+  }
 
   function save() {
     updateSettings({
@@ -2474,6 +2509,24 @@ function SettingsTab({ settings, updateSettings, onReset, showToast }) {
 
       <div className="card p-5 mb-4" style={{ maxWidth: 560 }}>
         <div style={{ fontWeight: 600, marginBottom: 12 }}>ข้อมูลกิจการ</div>
+        <div className="flex items-center gap-3 mb-3">
+          {f.logoUrl ? (
+            <img src={f.logoUrl} alt="" style={{ width: 56, height: 56, objectFit: "contain", borderRadius: 8, border: "1px solid var(--border)", background: "#fff" }} />
+          ) : (
+            <div style={{ width: 56, height: 56, borderRadius: 8, background: "var(--paper)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <SlidersHorizontal size={20} color="var(--steel-light)" />
+            </div>
+          )}
+          <div>
+            <label className="btn-ghost px-3 py-1.5 text-sm" style={{ cursor: "pointer", display: "inline-block" }}>
+              {logoLoading ? "กำลังโหลด..." : "อัปโหลดโลโก้"}
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleLogo} />
+            </label>
+            {f.logoUrl && (
+              <button className="btn-ghost btn-danger px-3 py-1.5 text-sm ml-2" onClick={() => setF({ ...f, logoUrl: "" })}>ลบโลโก้</button>
+            )}
+          </div>
+        </div>
         <Field label="ชื่อกิจการ"><input className={inputCls} value={f.companyName} onChange={(e) => setF({ ...f, companyName: e.target.value })} /></Field>
         <Field label="ที่อยู่"><textarea className={inputCls} rows={2} value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} /></Field>
         <div className="grid grid-cols-2 gap-3">
