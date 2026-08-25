@@ -501,6 +501,20 @@ function statusBadge(status) {
   return <span className="badge" style={{ background: s.bg, color: s.fg }}>{s.label}</span>;
 }
 
+const DOC_TYPE_COLOR = {
+  quote: { bg: "#EAEAE3", fg: "var(--ink-soft)" },
+  invoice: { bg: "#DEEAF6", fg: "#2A5F8A" },
+  taxinvoice: { bg: "#E2E6FA", fg: "#2A4B9B" },
+  receipt: { bg: "var(--green-bg)", fg: "var(--green)" },
+  debitnote: { bg: "#FBF0DF", fg: "var(--amber-dark)" },
+  creditnote: { bg: "var(--red-bg)", fg: "var(--red)" },
+};
+
+function docTypeBadge(docType) {
+  const c = DOC_TYPE_COLOR[docType] || DOC_TYPE_COLOR.quote;
+  return <span className="badge" style={{ background: c.bg, color: c.fg }}>{DOC_TYPE_LABEL[docType] || docType}</span>;
+}
+
 /* --------------------------------- dashboard -------------------------------- */
 
 function Dashboard({ documents, transactions, products, customers, settings }) {
@@ -1242,6 +1256,12 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
   const [paymentDoc, setPaymentDoc] = useState(null);
   const [typeFilter, setTypeFilter] = useState("all");
   const customerName = (id) => customers.find((c) => c.id === id)?.name || "ไม่ระบุ";
+  const hasWorkflowActions = (d) =>
+    (d.docType === "quote" && d.status === "draft") ||
+    (d.docType === "quote" && d.status === "sent") ||
+    (d.docType === "quote" && d.status === "accepted" && !d.convertedInvoiceId) ||
+    (d.docType === "quote" && d.status === "accepted" && !d.convertedTaxInvoiceId) ||
+    (d.docType === "invoice" && d.status === "draft");
 
   const filtered = documents.filter((d) => typeFilter === "all" || d.docType === typeFilter).sort((a, b) => (a.date < b.date ? 1 : -1));
 
@@ -1379,7 +1399,7 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
               {filtered.map((d) => (
                 <tr key={d.id}>
                   <td className="mono" style={{ fontWeight: 500 }}>{d.docNumber}</td>
-                  <td>{DOC_TYPE_LABEL[d.docType] || d.docType}</td>
+                  <td>{docTypeBadge(d.docType)}</td>
                   <td>{customerName(d.customerId)}</td>
                   <td>{fmtDate(d.date)}</td>
                   <td className="mono" style={{ fontWeight: 600 }}>
@@ -1390,33 +1410,44 @@ function DocumentsTab({ documents, customers, products, settings, updateDocument
                   </td>
                   <td>{statusBadge(d.status)}</td>
                   <td>
-                    <div className="flex gap-1.5 justify-end flex-wrap">
-                      <button className="btn-ghost p-1.5" title="ดู/พิมพ์เอกสาร" onClick={() => setViewDoc(d)}><Printer size={14} /></button>
-                      {d.docType === "quote" && d.status === "draft" && (
-                        <button className="btn-ghost p-1.5" title="ทำเครื่องหมายว่าส่งแล้ว" onClick={() => setStatus(d, "sent")}><Send size={14} /></button>
+                    <div className="flex items-center justify-end flex-wrap" style={{ gap: 2 }}>
+                      <button className="btn-ghost p-1.5" title="ดู/พิมพ์เอกสาร" onClick={() => setViewDoc(d)}><Printer size={14} color="var(--steel)" /></button>
+
+                      {hasWorkflowActions(d) && (
+                        <span className="flex items-center" style={{ gap: 2, borderLeft: "1px solid var(--border)", marginLeft: 4, paddingLeft: 4 }}>
+                          {d.docType === "quote" && d.status === "draft" && (
+                            <button className="btn-ghost p-1.5" title="ทำเครื่องหมายว่าส่งแล้ว" onClick={() => setStatus(d, "sent")}><Send size={14} color="#2A5F8A" /></button>
+                          )}
+                          {d.docType === "quote" && d.status === "sent" && (
+                            <button className="btn-ghost p-1.5" title="ลูกค้าตอบรับ" onClick={() => setStatus(d, "accepted")}><CheckCircle2 size={14} color="var(--green)" /></button>
+                          )}
+                          {d.docType === "quote" && d.status === "accepted" && !d.convertedInvoiceId && (
+                            <button className="btn-ghost p-1.5" title="แปลงเป็นใบแจ้งหนี้" onClick={() => convertQuote(d, "invoice")}><ArrowRight size={14} color="#2A5F8A" /></button>
+                          )}
+                          {d.docType === "quote" && d.status === "accepted" && !d.convertedTaxInvoiceId && (
+                            <button className="btn-ghost p-1.5" title="แปลงเป็นใบกำกับภาษี" onClick={() => convertQuote(d, "taxinvoice")}><FileCheck2 size={14} color="#2A4B9B" /></button>
+                          )}
+                          {d.docType === "invoice" && d.status === "draft" && (
+                            <button className="btn-ghost p-1.5" title="ออกบิล" onClick={() => setStatus(d, "issued")}><FileCheck2 size={14} color="#2A5F8A" /></button>
+                          )}
+                        </span>
                       )}
-                      {d.docType === "quote" && d.status === "sent" && (
-                        <button className="btn-ghost p-1.5" title="ลูกค้าตอบรับ" onClick={() => setStatus(d, "accepted")}><CheckCircle2 size={14} /></button>
-                      )}
-                      {d.docType === "quote" && d.status === "accepted" && !d.convertedInvoiceId && (
-                        <button className="btn-ghost p-1.5" title="แปลงเป็นใบแจ้งหนี้" onClick={() => convertQuote(d, "invoice")}><ArrowRight size={14} /></button>
-                      )}
-                      {d.docType === "quote" && d.status === "accepted" && !d.convertedTaxInvoiceId && (
-                        <button className="btn-ghost p-1.5" title="แปลงเป็นใบกำกับภาษี" onClick={() => convertQuote(d, "taxinvoice")}><FileCheck2 size={14} /></button>
-                      )}
-                      {d.docType === "invoice" && d.status === "draft" && (
-                        <button className="btn-ghost p-1.5" title="ออกบิล" onClick={() => setStatus(d, "issued")}><FileCheck2 size={14} /></button>
-                      )}
+
                       {(d.docType === "invoice" || d.docType === "taxinvoice") && !d.settled && d.status !== "cancelled" && (
-                        <button className="btn-ghost p-1.5" title="รับชำระเงิน" onClick={() => setPaymentDoc(d)}><CheckCircle2 size={14} /></button>
+                        <span className="flex items-center" style={{ borderLeft: "1px solid var(--border)", marginLeft: 4, paddingLeft: 4 }}>
+                          <button className="btn-ghost p-1.5" title="รับชำระเงิน" onClick={() => setPaymentDoc(d)}><CheckCircle2 size={14} color="var(--green)" /></button>
+                        </span>
                       )}
-                      {["draft", "sent", "issued"].includes(d.status) && (
-                        <button className="btn-ghost p-1.5" title="ยกเลิก" onClick={() => setStatus(d, "cancelled")}><Ban size={14} /></button>
-                      )}
-                      {d.status === "draft" && !(d.payments?.length > 0) && (
-                        <button className="btn-ghost p-1.5" onClick={() => setModal({ mode: "edit", data: d })}><Pencil size={14} /></button>
-                      )}
-                      <button className="btn-ghost btn-danger p-1.5" onClick={() => remove(d.id)}><Trash2 size={14} /></button>
+
+                      <span className="flex items-center" style={{ gap: 2, borderLeft: "1px solid var(--border)", marginLeft: 4, paddingLeft: 4 }}>
+                        {["draft", "sent", "issued"].includes(d.status) && (
+                          <button className="btn-ghost p-1.5" title="ยกเลิก" onClick={() => setStatus(d, "cancelled")}><Ban size={14} color="var(--amber-dark)" /></button>
+                        )}
+                        {d.status === "draft" && !(d.payments?.length > 0) && (
+                          <button className="btn-ghost p-1.5" title="แก้ไข" onClick={() => setModal({ mode: "edit", data: d })}><Pencil size={14} color="var(--steel)" /></button>
+                        )}
+                        <button className="btn-ghost btn-danger p-1.5" title="ลบ" onClick={() => remove(d.id)}><Trash2 size={14} /></button>
+                      </span>
                     </div>
                   </td>
                 </tr>
