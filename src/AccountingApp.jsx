@@ -20,6 +20,28 @@ const thb = (n) =>
   );
 const fmtDate = (d) =>
   d ? new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" }) : "-";
+function resizeImageToDataUrl(file, maxSize = 200, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 const monthKey = (d) => (d || today()).slice(0, 7);
 const monthLabel = (key) => {
   const [y, m] = key.split("-");
@@ -709,7 +731,7 @@ function InventoryTab({ products, updateProducts, settings, showToast, confirmAc
         title="สต็อกสินค้า"
         subtitle={`ทั้งหมด ${products.length} รายการ`}
         action={
-          <button className="btn-primary flex items-center gap-1.5 px-4 py-2 text-sm" onClick={() => setModal({ mode: "add", data: { name: "", sku: "", unit: "ชิ้น", price: "", stock: "", lowStockThreshold: "" } })}>
+          <button className="btn-primary flex items-center gap-1.5 px-4 py-2 text-sm" onClick={() => setModal({ mode: "add", data: { name: "", sku: "", unit: "ชิ้น", price: "", stock: "", lowStockThreshold: "", imageUrl: "" } })}>
             <Plus size={16} /> เพิ่มสินค้า
           </button>
         }
@@ -724,12 +746,21 @@ function InventoryTab({ products, updateProducts, settings, showToast, confirmAc
       ) : (
         <div className="card overflow-x-auto">
           <table>
-            <thead><tr><th>สินค้า</th><th>SKU</th><th>ราคา/หน่วย</th><th>คงเหลือ</th><th></th></tr></thead>
+            <thead><tr><th style={{ width: 48 }}></th><th>สินค้า</th><th>SKU</th><th>ราคา/หน่วย</th><th>คงเหลือ</th><th></th></tr></thead>
             <tbody>
               {filtered.map((p) => {
                 const low = p.stock <= (p.lowStockThreshold ?? settings.lowStockDefault);
                 return (
                   <tr key={p.id}>
+                    <td>
+                      {p.imageUrl ? (
+                        <img src={p.imageUrl} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 6 }} />
+                      ) : (
+                        <div style={{ width: 32, height: 32, borderRadius: 6, background: "var(--paper)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <Package size={14} color="var(--steel-light)" />
+                        </div>
+                      )}
+                    </td>
                     <td style={{ fontWeight: 500 }}>{p.name}</td>
                     <td className="mono">{p.sku || "-"}</td>
                     <td className="mono">{thb(p.price)}</td>
@@ -763,8 +794,40 @@ function InventoryTab({ products, updateProducts, settings, showToast, confirmAc
 
 function ProductForm({ data, onSave }) {
   const [f, setF] = useState(data);
+  const [imgLoading, setImgLoading] = useState(false);
+
+  async function handleImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImgLoading(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(file);
+      setF((cur) => ({ ...cur, imageUrl: dataUrl }));
+    } finally {
+      setImgLoading(false);
+    }
+  }
+
   return (
     <div>
+      <div className="flex items-center gap-3 mb-3">
+        {f.imageUrl ? (
+          <img src={f.imageUrl} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 8 }} />
+        ) : (
+          <div style={{ width: 56, height: 56, borderRadius: 8, background: "var(--paper)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Package size={22} color="var(--steel-light)" />
+          </div>
+        )}
+        <div>
+          <label className="btn-ghost px-3 py-1.5 text-sm" style={{ cursor: "pointer", display: "inline-block" }}>
+            {imgLoading ? "กำลังโหลด..." : "อัปโหลดรูปสินค้า"}
+            <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleImage} />
+          </label>
+          {f.imageUrl && (
+            <button className="btn-ghost btn-danger px-3 py-1.5 text-sm ml-2" onClick={() => setF({ ...f, imageUrl: "" })}>ลบรูป</button>
+          )}
+        </div>
+      </div>
       <Field label="ชื่อสินค้า/บริการ *"><input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
       <div className="grid grid-cols-2 gap-3">
         <Field label="SKU / รหัส"><input className={inputCls} value={f.sku} onChange={(e) => setF({ ...f, sku: e.target.value })} /></Field>
@@ -1431,7 +1494,6 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
   const [items, setItems] = useState(existing?.items || []);
   const effectiveType = docType || existing?.docType || "quote";
   const isAdjustNote = effectiveType === "debitnote" || effectiveType === "creditnote";
-  const isTaxDoc = effectiveType === "taxinvoice" || effectiveType === "receipt" || isAdjustNote;
 
   const [refNote, setRefNote] = useState(existing?.refNote || "");
   const [jobName, setJobName] = useState(existing?.jobName || "");
@@ -1451,7 +1513,7 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
   );
 
   function addItem() {
-    setItems([...items, { id: uid(), productId: "", name: "", unit: "", qty: 1, price: 0, discount: 0 }]);
+    setItems([...items, { id: uid(), productId: "", name: "", sku: "", imageUrl: "", unit: "", qty: 1, price: 0, discount: 0 }]);
   }
   function updateItem(id, patch) {
     setItems(items.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -1461,7 +1523,7 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
   }
   function pickProduct(id, productId) {
     const p = products.find((x) => x.id === productId);
-    updateItem(id, { productId, name: p ? p.name : "", price: p ? p.price : 0, unit: p ? p.unit : "" });
+    updateItem(id, { productId, name: p ? p.name : "", price: p ? p.price : 0, unit: p ? p.unit : "", sku: p ? p.sku : "", imageUrl: p ? p.imageUrl : "" });
   }
 
   const subtotal = items.reduce((s, it) => s + (Number(it.qty || 0) * Number(it.price || 0) - Number(it.discount || 0)), 0);
@@ -1474,7 +1536,7 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
       docType: effectiveType,
       customerId, date, dueDate, includeVat, note, items,
       subtotal, vatAmount, total,
-      ...(isTaxDoc ? { refNote, jobName, contactName, contactPhone } : {}),
+      refNote, jobName, contactName, contactPhone,
       ...(effectiveType === "receipt" ? { paymentMethod, bankName, paymentRefNumber, paymentDate } : {}),
       ...(isAdjustNote ? { sourceDocId, adjustReason } : {}),
       ...(canBeSimplified ? { isSimplified } : {}),
@@ -1497,14 +1559,12 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
       </Field>
       {customers.length === 0 && <p style={{ fontSize: 12, color: "var(--red)", marginTop: -8, marginBottom: 10 }}>ยังไม่มีลูกค้าในระบบ กรุณาเพิ่มลูกค้าก่อนที่เมนู "ลูกค้า"</p>}
 
-      {isTaxDoc && (
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="อ้างอิง (เลขที่ใบเสนอราคา / PO)"><input className={inputCls} value={refNote} onChange={(e) => setRefNote(e.target.value)} /></Field>
-          <Field label="ชื่องาน"><input className={inputCls} value={jobName} onChange={(e) => setJobName(e.target.value)} /></Field>
-          <Field label="ผู้ติดต่อ"><input className={inputCls} value={contactName} onChange={(e) => setContactName(e.target.value)} /></Field>
-          <Field label="เบอร์โทร"><input className={inputCls} value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} /></Field>
-        </div>
-      )}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="อ้างอิง (เลขที่ใบเสนอราคา / PO)"><input className={inputCls} value={refNote} onChange={(e) => setRefNote(e.target.value)} /></Field>
+        <Field label="ชื่องาน"><input className={inputCls} value={jobName} onChange={(e) => setJobName(e.target.value)} /></Field>
+        <Field label="ผู้ติดต่อ"><input className={inputCls} value={contactName} onChange={(e) => setContactName(e.target.value)} /></Field>
+        <Field label="เบอร์โทร"><input className={inputCls} value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} /></Field>
+      </div>
 
       {canBeSimplified && (
         <label className="flex items-center gap-2 mb-3" style={{ fontSize: 13 }}>
@@ -1536,6 +1596,13 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
       <div className="flex flex-col gap-2 mb-3">
         {items.map((it) => (
           <div key={it.id} className="flex gap-2 items-start card p-2" style={{ background: "var(--paper)" }}>
+            {it.imageUrl ? (
+              <img src={it.imageUrl} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
+            ) : (
+              <div style={{ width: 32, height: 32, borderRadius: 6, background: "var(--surface)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <Package size={14} color="var(--steel-light)" />
+              </div>
+            )}
             <select className="text-sm" style={{ flex: 2, padding: "6px 8px" }} value={it.productId} onChange={(e) => pickProduct(it.id, e.target.value)}>
               <option value="">กำหนดเอง / เลือกสินค้า</option>
               {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1546,9 +1613,7 @@ function DocumentForm({ existing, docType, customers, products, documents, setti
             <input type="number" className="text-sm mono" style={{ width: 55, padding: "6px 8px" }} placeholder="จำนวน" value={it.qty} onChange={(e) => updateItem(it.id, { qty: e.target.value })} />
             <input className="text-sm" style={{ width: 60, padding: "6px 8px" }} placeholder="หน่วย" value={it.unit} onChange={(e) => updateItem(it.id, { unit: e.target.value })} />
             <input type="number" step="0.01" className="text-sm mono" style={{ width: 90, padding: "6px 8px" }} placeholder="ราคา" value={it.price} onChange={(e) => updateItem(it.id, { price: e.target.value })} />
-            {isTaxDoc && (
-              <input type="number" step="0.01" className="text-sm mono" style={{ width: 80, padding: "6px 8px" }} placeholder="ส่วนลด" value={it.discount || 0} onChange={(e) => updateItem(it.id, { discount: e.target.value })} />
-            )}
+            <input type="number" step="0.01" className="text-sm mono" style={{ width: 80, padding: "6px 8px" }} placeholder="ส่วนลด" value={it.discount || 0} onChange={(e) => updateItem(it.id, { discount: e.target.value })} />
             <div className="mono text-sm" style={{ width: 90, padding: "6px 0", textAlign: "right", fontWeight: 600 }}>{thb(Number(it.qty || 0) * Number(it.price || 0) - Number(it.discount || 0))}</div>
             <button className="btn-ghost btn-danger p-1.5" onClick={() => removeItem(it.id)}><Trash2 size={13} /></button>
           </div>
@@ -1624,7 +1689,13 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
             </div>
             <div className="text-right">
               <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 18, color: "var(--ink)" }}>{title}</div>
-              <div className="mono" style={{ fontSize: 13, marginTop: 4 }}>{doc.docNumber}</div>
+              <table style={{ marginTop: 8, fontSize: 12 }}>
+                <tbody>
+                  <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>เลขที่</td><td className="mono" style={{ padding: "2px 0", border: "none", fontWeight: 600 }}>{doc.docNumber}</td></tr>
+                  <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>ผู้ขาย</td><td style={{ padding: "2px 0", border: "none" }}>{settings.sellerCode}</td></tr>
+                  {doc.refNote && <tr><td style={{ padding: "2px 8px 2px 0", color: "var(--steel)", border: "none" }}>อ้างอิง</td><td style={{ padding: "2px 0", border: "none" }}>{doc.refNote}</td></tr>}
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -1644,14 +1715,24 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
             </div>
           </div>
 
+          {(doc.jobName || doc.contactName || doc.contactPhone) && (
+            <div className="card p-3 mb-6 grid grid-cols-3 gap-2" style={{ fontSize: 12 }}>
+              <div><div style={{ color: "var(--steel)", fontSize: 11 }}>ชื่องาน</div>{doc.jobName || "-"}</div>
+              <div><div style={{ color: "var(--steel)", fontSize: 11 }}>ผู้ติดต่อ</div>{doc.contactName || "-"}</div>
+              <div><div style={{ color: "var(--steel)", fontSize: 11 }}>เบอร์โทร</div>{doc.contactPhone || "-"}</div>
+            </div>
+          )}
+
           <table style={{ marginBottom: 6 }}>
             <thead>
               <tr>
                 <th style={{ width: 36 }}>ลำดับ</th>
+                <th style={{ width: 44 }}>รูป</th>
                 <th>รายการ</th>
                 <th style={{ textAlign: "right" }}>จำนวน</th>
                 <th>หน่วย</th>
                 <th style={{ textAlign: "right" }}>ราคา/หน่วย</th>
+                <th style={{ textAlign: "right" }}>ส่วนลด</th>
                 <th style={{ textAlign: "right" }}>จำนวนเงิน</th>
               </tr>
             </thead>
@@ -1659,11 +1740,22 @@ function DocumentPrintView({ doc, customers, settings, onClose }) {
               {doc.items.map((it, i) => (
                 <tr key={it.id}>
                   <td>{i + 1}</td>
-                  <td>{it.name}</td>
+                  <td>
+                    {it.imageUrl ? (
+                      <img src={it.imageUrl} alt="" style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4 }} />
+                    ) : (
+                      <div style={{ width: 36, height: 36, borderRadius: 4, background: "var(--paper)" }} />
+                    )}
+                  </td>
+                  <td>
+                    {it.sku && <div style={{ fontSize: 11, color: "var(--steel)" }}>รหัสสินค้า: {it.sku}</div>}
+                    {it.name}
+                  </td>
                   <td className="mono" style={{ textAlign: "right" }}>{it.qty}</td>
                   <td>{it.unit || "-"}</td>
                   <td className="mono" style={{ textAlign: "right" }}>{thb(it.price)}</td>
-                  <td className="mono" style={{ textAlign: "right" }}>{thb(Number(it.qty) * Number(it.price))}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{it.discount ? thb(it.discount) : "-"}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{thb(Number(it.qty) * Number(it.price) - Number(it.discount || 0))}</td>
                 </tr>
               ))}
             </tbody>
@@ -1804,6 +1896,7 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
             <thead>
               <tr>
                 <th style={{ width: 32 }}>#</th>
+                <th style={{ width: 44 }}>รูป</th>
                 <th>รายละเอียด</th>
                 <th style={{ textAlign: "right" }}>จำนวน</th>
                 <th>หน่วย</th>
@@ -1816,7 +1909,17 @@ function TaxReceiptPrintView({ doc, customers, documents, settings, onClose }) {
               {doc.items.map((it, i) => (
                 <tr key={it.id}>
                   <td>{i + 1}</td>
-                  <td>{it.name}</td>
+                  <td>
+                    {it.imageUrl ? (
+                      <img src={it.imageUrl} alt="" style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 4 }} />
+                    ) : (
+                      <div style={{ width: 36, height: 36, borderRadius: 4, background: "var(--surface)" }} />
+                    )}
+                  </td>
+                  <td>
+                    {it.sku && <div style={{ fontSize: 11, color: "var(--steel)" }}>รหัสสินค้า: {it.sku}</div>}
+                    {it.name}
+                  </td>
                   <td className="mono" style={{ textAlign: "right" }}>{it.qty}</td>
                   <td>{it.unit || "-"}</td>
                   <td className="mono" style={{ textAlign: "right" }}>{thb(it.price)}</td>
